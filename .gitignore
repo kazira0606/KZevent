@@ -1,0 +1,8 @@
+#Clion
+.idea
+
+#编译
+cmake-build-debug
+
+#日志文件
+log
