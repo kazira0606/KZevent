@@ -7,6 +7,9 @@ project(KZevent
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+find_package(Threads REQUIRED)
 
 set(KZEVENT_SOURCES
         src/core.cpp
@@ -20,11 +23,15 @@ set(KZEVENT_SOURCES
 
 add_library(kzevent ${KZEVENT_SOURCES})
 
+target_link_libraries(kzevent PRIVATE Threads::Threads)
+
 target_include_directories(kzevent
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
+
+target_compile_definitions(kzevent PRIVATE KZ_EVENT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR
     CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

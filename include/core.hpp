@@ -12,6 +12,9 @@
 #include "sys_error.hpp"
 
 namespace kzevent::core {
+  /* epoll配置 */
+  static constexpr uint32_t kEpollMaxLen = 256;
+
   /* 事件类型 */
   enum class EventType : uint32_t {
     kNone = 0,

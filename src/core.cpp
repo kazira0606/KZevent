@@ -17,8 +17,6 @@
 #include "log.hpp"
 #include "sys_error.hpp"
 
-constexpr uint32_t kEpollMaxLen = 256;
-
 namespace kzevent::core {
   /* EventType运算符重载 */
   constexpr EventType operator|(EventType a, EventType b) noexcept {

@@ -2,6 +2,7 @@
 
 #include <sstream>
 #include <string>
+#include <cstdint>
 #include <utility>
 
 namespace kzevent::log {
