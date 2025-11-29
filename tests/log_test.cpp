@@ -101,6 +101,7 @@ TEST_F(KZLogTest, VerifyContentWithMultiThreads) {
   std::string one_line;
   int valid_lines = 0;
 
+  /* 验证每一行完整度 */
   while (std::getline(content, one_line)) {
     if (one_line.empty()) continue;
 
@@ -108,7 +109,7 @@ TEST_F(KZLogTest, VerifyContentWithMultiThreads) {
     int token_hits = 0;
     size_t pos = 0;
 
-    // 循环查找 token 出现的次数
+    /* 循环查找 token 出现的次数 */
     while ((pos = one_line.find(token, pos)) != std::string::npos) {
       token_hits++;
       pos += token.length();
@@ -124,7 +125,7 @@ TEST_F(KZLogTest, VerifyContentWithMultiThreads) {
     valid_lines++;
   }
 
-  /* 验证 B: 日志完整度  */
+  /* 验证日志完整度  */
   constexpr int expect_lines = thread_count * logs_per_thread * 3;
   EXPECT_EQ(valid_lines, expect_lines)
       << "Expected " << expect_lines << " lines, but got " << valid_lines;
