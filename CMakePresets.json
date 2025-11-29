@@ -1,0 +1,46 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "default-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug (Standard)",
+      "description": "Normal Debug Build",
+      "inherits": "default-base",
+      "cacheVariables": {
+        "ENABLE_ASAN": "OFF"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "Debug + ASan (Memory)",
+      "description": "Address Sanitizer & UBSan & Leak Sanitizer",
+      "inherits": "default-base",
+      "cacheVariables": {
+        "ENABLE_ASAN": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "asan",  "configurePreset": "asan" }
+  ],
+  "testPresets": [
+    { "name": "debug", "configurePreset": "debug", "output": {"verbosity": "verbose"} },
+    { "name": "asan",  "configurePreset": "asan",  "output": {"verbosity": "verbose"} }
+  ]
+}
