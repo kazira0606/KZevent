@@ -13,9 +13,9 @@
 #include <unistd.h>
 #include <sys/eventfd.h>
 
-#include "core.hpp"
-#include "log.hpp"
-#include "sys_error.hpp"
+#include "kzevent/core.hpp"
+#include "kzevent/log.hpp"
+#include "kzevent/sys_error.hpp"
 
 namespace kzevent::core {
   /* EventType运算符重载 */

@@ -1,8 +1,5 @@
-#Clion
+#IDE
 .idea
+.vscode
 
-#编译
 cmake-build-debug
-
-#日志文件
-logs

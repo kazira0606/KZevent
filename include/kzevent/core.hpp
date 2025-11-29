@@ -9,8 +9,6 @@
 #include <vector>
 #include <condition_variable>
 
-#include "sys_error.hpp"
-
 namespace kzevent::core {
   /* epoll配置 */
   static constexpr uint32_t kEpollMaxLen = 256;

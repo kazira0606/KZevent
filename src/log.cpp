@@ -1,5 +1,3 @@
-#include "log.hpp"
-
 #include <iostream>
 #include <fstream>
 #include <mutex>
@@ -8,6 +6,8 @@
 #include <thread>
 #include <filesystem>
 #include <ctime>
+
+#include "kzevent/log.hpp"
 
 namespace fs = std::filesystem;
 
@@ -48,13 +48,13 @@ namespace kzevent::log::detail {
   private:
     LogManager() {
       /* 使用CMake配置的宏 */
-      log_dir_ = fs::path(KZ_EVENT_ROOT) / "logs";
+      log_dir_ = fs::path(KZ_EVENT_LOG_DIR) / "kz_logs";
 
       /* 目录不存在->创建目录 */
       if (std::error_code ec; !fs::exists(log_dir_)) {
         fs::create_directories(log_dir_, ec);
         if (ec) {
-          std::cerr << "failed to create logs directory: " << log_dir_ << ", error: " << ec.message() << std::endl;
+          std::cerr << "failed to create kz_logs directory: " << log_dir_ << ", error: " << ec.message() << std::endl;
         }
       }
     }
@@ -76,7 +76,7 @@ namespace kzevent::log::detail {
       localtime_r(&in_time_t, &tm_buf);
 
       std::stringstream file_name;
-      /* 拼接完整路径例: /home/user/project/logs/kz_log_xxxx-xx-xx_xx-xx-xx.txt */
+      /* 拼接完整路径例: /home/user/project/kz_logs/kz_log_xxxx-xx-xx_xx-xx-xx.txt */
       file_name << "kz_log_"
           << std::put_time(&tm_buf, "%Y-%m-%d_%H-%M-%S")
           << ".txt";
@@ -87,7 +87,7 @@ namespace kzevent::log::detail {
       log_file_.open(file_path, std::ios::out | std::ios::app);
 
       if (!log_file_.is_open()) {
-        std::cerr << "FATAL: failed to open logs file: " << file_path << std::endl;
+        std::cerr << "FATAL: failed to open kz_logs file: " << file_path << std::endl;
       }
 
       current_line_count_ = 0;
@@ -117,4 +117,4 @@ namespace kzevent::log::detail {
       /* 吞掉异常，该日志写入失败 */
     }
   }
-} // namespace::kzevent::logs::detail
+} // namespace::kzevent::kz_logs::detail
