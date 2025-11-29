@@ -9,5 +9,7 @@ target_link_libraries(unit_tests
         GTest::gtest_main
 )
 
+target_compile_definitions(unit_tests PRIVATE KZ_EVENT_LOG_DIR=\"${CMAKE_BINARY_DIR}\")
+
 include(GoogleTest)
 gtest_discover_tests(unit_tests)

@@ -10,7 +10,7 @@ set(KZEVENT_SOURCES
 
 add_library(kzevent ${KZEVENT_SOURCES})
 
-target_link_libraries(kzevent PRIVATE Threads::Threads)
+target_link_libraries(kzevent PUBLIC Threads::Threads)
 
 target_include_directories(kzevent
     PUBLIC

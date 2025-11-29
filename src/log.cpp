@@ -117,4 +117,4 @@ namespace kzevent::log::detail {
       /* 吞掉异常，该日志写入失败 */
     }
   }
-} // namespace::kzevent::kz_logs::detail
+} // namespace::kzevent::log::detail
