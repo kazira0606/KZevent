@@ -1,9 +1,9 @@
 #include <filesystem>
 #include <fstream>
-#include <string>
-#include <vector>
 #include <random>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -17,11 +17,12 @@ int random_int() {
   return dis(gen);
 }
 
-std::optional<std::filesystem::path> get_latest_file(const std::filesystem::path& dir) {
+std::optional<std::filesystem::path>
+get_latest_file(const std::filesystem::path &dir) {
   fs::path latest_file{};
   fs::file_time_type latest_time{};
 
-  for (const auto& entry : fs::directory_iterator(dir)) {
+  for (const auto &entry : fs::directory_iterator(dir)) {
     if (entry.is_regular_file() && entry.path().extension() == ".txt") {
       if (latest_file.empty() || entry.last_write_time() > latest_time) {
         latest_time = entry.last_write_time();
@@ -47,7 +48,7 @@ class KZLogTest : public testing::Test {
 protected:
   void SetUp() override {
     if (fs::exists(log_dir_)) {
-      for (const auto &entry: fs::directory_iterator(log_dir_)) {
+      for (const auto &entry : fs::directory_iterator(log_dir_)) {
         fs::remove(entry.path());
       }
     }
@@ -69,13 +70,17 @@ TEST_F(KZLogTest, VerifyContentWithMultiThreads) {
   std::atomic<int> error_count{0};
 
   /* 并发测试 */
+  threads.reserve(thread_count);
   for (int thread_index = 0; thread_index < thread_count; ++thread_index) {
     threads.emplace_back([token, thread_index, &error_count] {
       try {
         for (int log_index = 0; log_index < logs_per_thread; ++log_index) {
-          KZ_LOG_INFO(token, " ", "Thread-", thread_index, " ", token, " Msg-", log_index, " ", token);
-          KZ_LOG_ERROR(token, " ", "Thread-", thread_index, " ", token, " Msg-", log_index, " ", token);
-          KZ_LOG_FATAL(token, " ", "Thread-", thread_index, " ", token, " Msg-", log_index, " ", token);
+          KZ_LOG_INFO(token, " ", "Thread-", thread_index, " ", token, " Msg-",
+                      log_index, " ", token);
+          KZ_LOG_ERROR(token, " ", "Thread-", thread_index, " ", token, " Msg-",
+                       log_index, " ", token);
+          KZ_LOG_FATAL(token, " ", "Thread-", thread_index, " ", token, " Msg-",
+                       log_index, " ", token);
         }
       } catch (...) {
         ++error_count;
@@ -84,8 +89,9 @@ TEST_F(KZLogTest, VerifyContentWithMultiThreads) {
   }
 
   /* 线程结束 */
-  for (auto& t : threads) {
-    if (t.joinable()) t.join();
+  for (auto &t : threads) {
+    if (t.joinable())
+      t.join();
   }
 
   /* 验证是否抛异常 */
@@ -102,7 +108,8 @@ TEST_F(KZLogTest, VerifyContentWithMultiThreads) {
 
   /* 验证每一行完整度 */
   while (std::getline(content, one_line)) {
-    if (one_line.empty()) continue;
+    if (one_line.empty())
+      continue;
 
     /* 每一行必须3token */
     int token_hits = 0;
@@ -116,8 +123,8 @@ TEST_F(KZLogTest, VerifyContentWithMultiThreads) {
 
     if (token_hits != 3) {
       /* 日志有破损行 */
-      ADD_FAILURE() << "Corrupted line found! Expected 3 tokens, found " << token_hits << "in "
-                    << "line: " << one_line;
+      ADD_FAILURE() << "Corrupted line found! Expected 3 tokens, found "
+                    << token_hits << "in " << "line: " << one_line;
       continue;
     }
 

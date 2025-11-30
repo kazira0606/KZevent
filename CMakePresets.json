@@ -35,12 +35,20 @@
       }
     }
   ],
-  "buildPresets": [
-    { "name": "debug", "configurePreset": "debug" },
-    { "name": "asan",  "configurePreset": "asan" }
-  ],
   "testPresets": [
-    { "name": "debug", "configurePreset": "debug", "output": {"verbosity": "verbose"} },
-    { "name": "asan",  "configurePreset": "asan",  "output": {"verbosity": "verbose"} }
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "output": {
+        "verbosity": "verbose"
+      }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": {
+        "verbosity": "verbose"
+      }
+    }
   ]
 }
