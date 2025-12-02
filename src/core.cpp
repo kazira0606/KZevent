@@ -216,6 +216,8 @@ void Loop::stop() {
     wake_heavy_up();
     heavy_thread_.join();
   }
+
+  exe_state_.store(ExeState::Stopped);
 }
 
 void Loop::register_fd(int32_t fd) {
@@ -359,10 +361,6 @@ void Loop::io_executor() {
     }
   }
 
-  if (auto expected{ExeState::Stopping};
-      !exe_state_.compare_exchange_strong(expected, ExeState::Stopped)) {
-    KZ_LOG_ERROR("loop io executor stop failed!");
-  }
   KZ_LOG_INFO("loop io executor stop successfully!");
 }
 
@@ -384,10 +382,6 @@ void Loop::heavy_executor() {
     heavy_exe_queue_.clear();
   }
 
-  if (auto expected{ExeState::Stopping};
-      !exe_state_.compare_exchange_strong(expected, ExeState::Stopped)) {
-    KZ_LOG_ERROR("loop heavy executor stop failed!");
-  }
   KZ_LOG_INFO("loop heavy executor stop successfully!");
 }
 
@@ -425,7 +419,7 @@ void LoopChannel::update_event(LifeChecker life_checker, const EventType types,
 
   auto wrapper_cb = [life_checker = std::move(life_checker),
                      cb](const EventType event_types) {
-    auto keep_life = life_checker.lock();
+    const auto keep_life = life_checker.lock();
     if (!keep_life) {
       KZ_LOG_ERROR("executor can`t run callback! fd has closed!");
       return;
@@ -440,15 +434,13 @@ void LoopChannel::update_event(LifeChecker life_checker, const EventType types,
                                const EventMode modes, CallBack &&cb) const {
   if (fd_ == -1 || in_loop_ == nullptr) {
     /* 无效的channel */
-    KZ_LOG_ERROR("invalid channel!");
     return;
   }
 
   auto wrapper_cb = [life_checker = std::move(life_checker),
                      cb = std::move(cb)](const EventType event_types) {
-    auto keep_life = life_checker.lock();
+    const auto keep_life = life_checker.lock();
     if (!keep_life) {
-      KZ_LOG_ERROR("executor can`t run callback! fd has closed!");
       return;
     }
     cb(event_types);

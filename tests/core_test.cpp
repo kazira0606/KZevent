@@ -533,3 +533,103 @@ TEST_F(KZCoreTest, DisableEventStopsCallback) {
   // unregister_fd 关闭
   session.reset();
 }
+
+/* stop() 后可以再次 start()，并且事件回调继续可用 */
+TEST_F(KZCoreTest, StopThenStartWorks) {
+  /* 同步点：用于等待回调执行到达指定次数 */
+  struct Sync {
+    std::mutex mtx_;
+    std::condition_variable cv_;
+    int32_t handled_{0};
+  };
+  auto sync = std::make_shared<Sync>();
+
+  /* 创建单pipe */
+  std::array<int32_t, 2> in_pipe{};
+  ASSERT_EQ(::pipe(in_pipe.data()), 0)
+      << std::error_code(errno, std::system_category()).message();
+  const int32_t read_fd = in_pipe[0];
+  const int32_t write_fd = in_pipe[1];
+
+  /* 监听的fd设置非阻塞 */
+  set_nonblocking(read_fd);
+
+  /* 被测试对象 */
+  struct SessionTestRestart
+      : public std::enable_shared_from_this<SessionTestRestart> {
+    SessionTestRestart(Loop &loop, int fd, std::shared_ptr<Sync> sync)
+        : ch_(loop, fd), sync_(std::move(sync)) {}
+
+    void start() {
+      ch_.update_event(weak_from_this(), EventType::kRead, EventMode::kET,
+                       [this](EventType) { on_read(); });
+    }
+
+    void on_read() {
+      /* ET读取：读到 EAGAIN 为止 */
+      bool got_any = false;
+      while (true) {
+        char tmp[256]{};
+        const ssize_t n = read(ch_.get_fd(), tmp, sizeof(tmp));
+        if (n > 0) {
+          got_any = true;
+          continue;
+        }
+        if (n < 0 && errno == EINTR) {
+          continue;
+        }
+        /* n == -1 && EAGAIN 或 n == 0 等情况都可退出 */
+        break;
+      }
+
+      if (got_any) {
+        std::lock_guard<std::mutex> lock(sync_->mtx_);
+        sync_->handled_ += 1;
+        sync_->cv_.notify_one();
+      }
+    }
+
+    LoopChannel ch_;
+    std::shared_ptr<Sync> sync_;
+  };
+
+  auto session = std::make_shared<SessionTestRestart>(*loop_, read_fd, sync);
+  session->start();
+
+  /* 第一次触发：应当能回调一次 */
+  {
+    const char c = 'a';
+    ASSERT_TRUE(write_all(write_fd, &c, 1))
+        << std::error_code(errno, std::system_category()).message();
+
+    std::unique_lock<std::mutex> lock(sync->mtx_);
+    ASSERT_TRUE(sync->cv_.wait_for(lock, std::chrono::seconds(2),
+                                   [&] { return sync->handled_ >= 1; }));
+  }
+
+  /* stop 后：再写入不应被处理（因为 executor 已停止） */
+  loop_->stop();
+
+  const char c = 'b';
+  ASSERT_TRUE(write_all(write_fd, &c, 1))
+      << std::error_code(errno, std::system_category()).message();
+
+  {
+    std::lock_guard<std::mutex> lock(sync->mtx_);
+    EXPECT_EQ(sync->handled_, 1) << "callback executed while loop stopped.";
+  }
+
+  /* 再次 start：之前 stop 期间积累在 pipe 里的数据应被处理，回调次数变为 2 */
+  loop_->start();
+  {
+    std::unique_lock<std::mutex> lock(sync->mtx_);
+    ASSERT_TRUE(sync->cv_.wait_for(lock, std::chrono::seconds(2),
+                                   [&] { return sync->handled_ >= 2; }));
+  }
+
+  /* 关闭资源 */
+  close(write_fd);
+  session.reset();
+  /* read_fd 将由 SessionTestRestart 析构 -> LoopChannel 析构 -> unregister_fd
+   * 关闭 */
+}

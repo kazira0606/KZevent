@@ -1,20 +1,22 @@
-add_executable(unit_tests
+add_executable(kz_unit_tests
         core_test.cpp
         log_test.cpp
 )
 
-target_link_libraries(unit_tests
+target_link_libraries(kz_unit_tests
         PRIVATE
         kzevent
         GTest::gtest_main
 )
 
-# core_test用
-target_compile_definitions(unit_tests PRIVATE KZEVENT_TEST_THREAD_COUNT=16)
-target_compile_definitions(unit_tests PRIVATE KZEVENT_TEST_TASKS_PER_THREAD=50)
-target_compile_definitions(unit_tests PRIVATE KZEVENT_TEST_DATA_SIZE=(64 * 1024))
-# log_test用
-target_compile_definitions(unit_tests PRIVATE KZ_EVENT_LOG_DIR=\"${CMAKE_BINARY_DIR}\")
+target_compile_definitions(kz_unit_tests PRIVATE
+        # core_test用
+        KZEVENT_TEST_THREAD_COUNT=16
+        KZEVENT_TEST_TASKS_PER_THREAD=50
+        KZEVENT_TEST_DATA_SIZE=65536
+        # log_test用
+        KZ_EVENT_LOG_DIR="${CMAKE_BINARY_DIR}"
+)
 
 include(GoogleTest)
-gtest_discover_tests(unit_tests)
+gtest_discover_tests(kz_unit_tests)

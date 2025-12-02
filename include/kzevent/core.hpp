@@ -160,9 +160,8 @@ public:
 
     auto task_wrapper = [life_checker = std::move(life_checker),
                          task = std::forward<Fun>(task)]() mutable {
-      auto keep_life = life_checker.lock();
+      const auto keep_life = life_checker.lock();
       if (!keep_life) {
-        KZ_LOG_ERROR("executor can`t run task! fd has closed!");
         return;
       }
       task();
@@ -181,9 +180,8 @@ public:
 
     auto task_wrapper = [life_checker = std::move(life_checker),
                          task = std::forward<Fun>(task)]() mutable {
-      auto keep_life = life_checker.lock();
+      const auto keep_life = life_checker.lock();
       if (!keep_life) {
-        KZ_LOG_ERROR("executor can`t run task! fd has closed!");
         return;
       }
       task();
