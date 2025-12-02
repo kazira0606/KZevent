@@ -7,11 +7,14 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
+
+#include <kzevent/log.hpp>
 
 namespace kzevent::core {
 /* epoll配置 */
-static constexpr uint32_t kEpollMaxLen = 256;
+static constexpr uint32_t kEpollMaxWaitLen = 256;
 
 /* 事件类型 */
 enum class EventType : uint32_t {
@@ -35,7 +38,7 @@ using LifeChecker = std::weak_ptr<void>;
 
 /* 循环监听+执行事件 */
 class Loop {
-  friend class FdHandler;
+  friend class LoopChannel;
 
 public:
   Loop();
@@ -54,10 +57,6 @@ public:
 
   void stop();
 
-  void post_io_task(LoopTask task);
-
-  void post_heavy_task(LoopTask task);
-
 private:
   /* 事件 */
   struct Event {
@@ -74,21 +73,29 @@ private:
 
   void disable_fd(int32_t fd);
 
-  /* 提交Loop任务 */
+  /* 提交loop任务 */
   void wake_io_up() const;
 
   void wake_heavy_up();
 
-  template <typename Fun> void add_io_task(Fun &&task) {
-    std::lock_guard lock(io_queue_mtx_);
-    io_buffer_queue_.emplace_back(std::forward<Fun>(task));
-    wake_io_up();
+  template <typename Fun> void post_io_task(Fun &&task) {
+    if (std::this_thread::get_id() == io_thread_.get_id()) {
+      task();
+    } else {
+      std::lock_guard lock(io_queue_mtx_);
+      io_buffer_queue_.emplace_back(std::forward<Fun>(task));
+      wake_io_up();
+    }
   }
 
-  template <typename Fun> void add_heavy_task(Fun &&task) {
-    std::lock_guard lock(heavy_queue_mtx_);
-    heavy_buffer_queue_.emplace_back(std::forward<Fun>(task));
-    wake_heavy_up();
+  template <typename Fun> void post_heavy_task(Fun &&task) {
+    if (std::this_thread::get_id() == heavy_thread_.get_id()) {
+      task();
+    } else {
+      std::lock_guard lock(heavy_queue_mtx_);
+      heavy_buffer_queue_.emplace_back(std::forward<Fun>(task));
+      wake_heavy_up();
+    }
   }
 
   /* Loop执行队列执行器 */
@@ -120,25 +127,72 @@ private:
   std::unordered_map<int32_t, Event> events_{};
 };
 
-/* fd handler */
-class FdHandler {
+/* Loop接口 */
+class LoopChannel {
 public:
-  FdHandler(Loop &loop, int32_t fd);
+  LoopChannel(Loop &loop, int32_t fd);
 
-  ~FdHandler();
+  ~LoopChannel();
 
-  FdHandler(const FdHandler &) = delete;
+  LoopChannel(const LoopChannel &) = delete;
 
-  FdHandler(FdHandler &&other) noexcept;
+  LoopChannel(LoopChannel &&other) noexcept;
 
-  FdHandler &operator=(FdHandler other);
+  LoopChannel &operator=(LoopChannel other);
 
-  void swap(FdHandler &other) noexcept;
+  void swap(LoopChannel &other) noexcept;
 
   void update_event(LifeChecker life_checker, EventType types, EventMode modes,
-                    CallBack cb) const;
+                    CallBack &cb) const;
+
+  void update_event(LifeChecker life_checker, EventType types, EventMode modes,
+                    CallBack &&cb) const;
 
   void disable_event() const;
+
+  template <typename Fun>
+  void post_io_task(LifeChecker life_checker, Fun &&task) const {
+    if (fd_ == -1 || in_loop_ == nullptr) {
+      /* 无效的channel */
+      KZ_LOG_ERROR("invalid channel!");
+      return;
+    }
+
+    auto task_wrapper = [life_checker = std::move(life_checker),
+                         task = std::forward<Fun>(task)]() mutable {
+      auto keep_life = life_checker.lock();
+      if (!keep_life) {
+        KZ_LOG_ERROR("executor can`t run task! fd has closed!");
+        return;
+      }
+      task();
+    };
+
+    in_loop_->post_io_task(std::move(task_wrapper));
+  }
+
+  template <typename Fun>
+  void post_heavy_task(LifeChecker life_checker, Fun &&task) const {
+    if (fd_ == -1 || in_loop_ == nullptr) {
+      /* 无效的channel */
+      KZ_LOG_ERROR("invalid channel!");
+      return;
+    }
+
+    auto task_wrapper = [life_checker = std::move(life_checker),
+                         task = std::forward<Fun>(task)]() mutable {
+      auto keep_life = life_checker.lock();
+      if (!keep_life) {
+        KZ_LOG_ERROR("executor can`t run task! fd has closed!");
+        return;
+      }
+      task();
+    };
+
+    in_loop_->post_heavy_task(std::move(task_wrapper));
+  }
+
+  [[nodiscard]] int32_t get_fd() const;
 
 private:
   Loop *in_loop_{nullptr};

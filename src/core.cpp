@@ -3,7 +3,6 @@
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
-#include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -215,23 +214,7 @@ void Loop::stop() {
     }
     /* 唤醒heavy executor */
     wake_heavy_up();
-    io_thread_.join();
-  }
-}
-
-void Loop::post_io_task(LoopTask task) {
-  if (std::this_thread::get_id() == io_thread_.get_id()) {
-    task();
-  } else {
-    add_io_task(std::move(task));
-  }
-}
-
-void Loop::post_heavy_task(LoopTask task) {
-  if (std::this_thread::get_id() == heavy_thread_.get_id()) {
-    task();
-  } else {
-    add_heavy_task(std::move(task));
+    heavy_thread_.join();
   }
 }
 
@@ -245,11 +228,7 @@ void Loop::register_fd(int32_t fd) {
     }
   };
 
-  if (std::this_thread::get_id() == io_thread_.get_id()) {
-    task();
-  } else {
-    add_io_task(std::move(task));
-  }
+  post_io_task(std::move(task));
 }
 
 void Loop::unregister_fd(int32_t fd) {
@@ -271,11 +250,7 @@ void Loop::unregister_fd(int32_t fd) {
     }
   };
 
-  if (std::this_thread::get_id() == io_thread_.get_id()) {
-    task();
-  } else {
-    add_io_task(std::move(task));
-  }
+  post_io_task(std::move(task));
 }
 
 void Loop::enable_fd(const int32_t fd, const EventType types,
@@ -312,11 +287,7 @@ void Loop::enable_fd(const int32_t fd, const EventType types,
     }
   };
 
-  if (std::this_thread::get_id() == io_thread_.get_id()) {
-    task();
-  } else {
-    add_io_task(std::move(task));
-  }
+  post_io_task(std::move(task));
 }
 
 void Loop::disable_fd(int32_t fd) {
@@ -334,11 +305,7 @@ void Loop::disable_fd(int32_t fd) {
     }
   };
 
-  if (std::this_thread::get_id() == io_thread_.get_id()) {
-    task();
-  } else {
-    add_io_task(std::move(task));
-  }
+  post_io_task(std::move(task));
 }
 
 void Loop::wake_io_up() const {
@@ -351,10 +318,11 @@ void Loop::wake_io_up() const {
 void Loop::wake_heavy_up() { heavy_wake_cv_.notify_one(); }
 
 void Loop::io_executor() {
-  std::array<epoll_event, kEpollMaxLen> evs{};
+  std::array<epoll_event, kEpollMaxWaitLen> evs{};
 
   while (exe_state_.load() == ExeState::Running) {
-    const auto ev_count = epoll_wait(epoll_fd_, evs.data(), kEpollMaxLen, -1);
+    const auto ev_count =
+        epoll_wait(epoll_fd_, evs.data(), kEpollMaxWaitLen, -1);
     if (ev_count < 0) {
       if (errno == EINTR) {
         /* 内核中断，重新wait */
@@ -386,8 +354,7 @@ void Loop::io_executor() {
       /* 执行回调 */
       if (const auto event_it = events_.find(it->data.fd);
           event_it != events_.end()) {
-        const auto cb = event_it->second.cb_;
-        cb(local_to_kz(it->events));
+        event_it->second.cb_(local_to_kz(it->events));
       }
     }
   }
@@ -424,56 +391,88 @@ void Loop::heavy_executor() {
   KZ_LOG_INFO("loop heavy executor stop successfully!");
 }
 
-/* FdHandler类 */
-FdHandler::FdHandler(Loop &loop, const int32_t fd) : in_loop_(&loop), fd_(fd) {
+/* LoopChannel类 */
+LoopChannel::LoopChannel(Loop &loop, const int32_t fd)
+    : in_loop_(&loop), fd_(fd) {
   in_loop_->register_fd(fd);
 }
 
-FdHandler::~FdHandler() {
+LoopChannel::~LoopChannel() {
   if (fd_ != -1 && in_loop_ != nullptr) {
     in_loop_->unregister_fd(fd_);
   }
 }
 
-FdHandler::FdHandler(FdHandler &&other) noexcept { swap(other); }
+LoopChannel::LoopChannel(LoopChannel &&other) noexcept { swap(other); }
 
-FdHandler &FdHandler::operator=(FdHandler other) {
+LoopChannel &LoopChannel::operator=(LoopChannel other) {
   swap(other);
   return *this;
 }
 
-void FdHandler::swap(FdHandler &other) noexcept {
+void LoopChannel::swap(LoopChannel &other) noexcept {
   std::swap(fd_, other.fd_);
   std::swap(in_loop_, other.in_loop_);
 }
 
-void FdHandler::update_event(LifeChecker life_checker, const EventType types,
-                             const EventMode modes, CallBack cb) const {
+void LoopChannel::update_event(LifeChecker life_checker, const EventType types,
+                               const EventMode modes, CallBack &cb) const {
   if (fd_ == -1 || in_loop_ == nullptr) {
-    /* 无效的handler */
-    KZ_LOG_ERROR("event handler fd has closed!");
+    /* 无效的channel */
+    KZ_LOG_ERROR("invalid channel!");
     return;
   }
 
   auto wrapper_cb = [life_checker = std::move(life_checker),
-                     cb = std::move(cb)](const EventType event_types) {
-    if (!life_checker.lock()) {
+                     cb](const EventType event_types) {
+    auto keep_life = life_checker.lock();
+    if (!keep_life) {
       KZ_LOG_ERROR("executor can`t run callback! fd has closed!");
       return;
     }
     cb(event_types);
   };
 
-  in_loop_->enable_fd(fd_, types, modes, wrapper_cb);
+  in_loop_->enable_fd(fd_, types, modes, std::move(wrapper_cb));
 }
 
-void FdHandler::disable_event() const {
+void LoopChannel::update_event(LifeChecker life_checker, const EventType types,
+                               const EventMode modes, CallBack &&cb) const {
   if (fd_ == -1 || in_loop_ == nullptr) {
-    /* 无效的handler */
-    KZ_LOG_ERROR("event handler fd has closed!");
+    /* 无效的channel */
+    KZ_LOG_ERROR("invalid channel!");
+    return;
+  }
+
+  auto wrapper_cb = [life_checker = std::move(life_checker),
+                     cb = std::move(cb)](const EventType event_types) {
+    auto keep_life = life_checker.lock();
+    if (!keep_life) {
+      KZ_LOG_ERROR("executor can`t run callback! fd has closed!");
+      return;
+    }
+    cb(event_types);
+  };
+
+  in_loop_->enable_fd(fd_, types, modes, std::move(wrapper_cb));
+}
+
+void LoopChannel::disable_event() const {
+  if (fd_ == -1 || in_loop_ == nullptr) {
+    /* 无效的channel */
+    KZ_LOG_ERROR("invalid channel!");
     return;
   }
 
   in_loop_->disable_fd(fd_);
+}
+
+int32_t LoopChannel::get_fd() const {
+  if (fd_ == -1 || in_loop_ == nullptr) {
+    /* 无效的channel */
+    KZ_LOG_ERROR("invalid channel!");
+  }
+
+  return fd_;
 }
 } // namespace kzevent::core

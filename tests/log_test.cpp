@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <random>
@@ -11,13 +12,15 @@
 
 namespace fs = std::filesystem;
 
-int random_int() {
+/* 工具函数->随机数生成 */
+static int32_t random_int() {
   static std::mt19937 gen{std::random_device{}()};
-  static std::uniform_int_distribution dis;
+  static std::uniform_int_distribution dis(-1000, 1000);
   return dis(gen);
 }
 
-std::optional<std::filesystem::path>
+/* 工具函数->获取最新日志 */
+static std::optional<std::filesystem::path>
 get_latest_file(const std::filesystem::path &dir) {
   fs::path latest_file{};
   fs::file_time_type latest_time{};
@@ -37,13 +40,15 @@ get_latest_file(const std::filesystem::path &dir) {
   return latest_file;
 }
 
-std::string read_file_content(const fs::path &path) {
+/* 工具函数->读取文件内容 */
+static std::string read_file_content(const fs::path &path) {
   std::ifstream log_file(path);
   std::stringstream log_content;
   log_content << log_file.rdbuf();
   return log_content.str();
 }
 
+/* 测试类 */
 class KZLogTest : public testing::Test {
 protected:
   void SetUp() override {
@@ -62,19 +67,19 @@ TEST_F(KZLogTest, VerifyContentWithMultiThreads) {
   std::string token = "TOKEN_" + std::to_string(random_int());
 
   /* 并发量配置 */
-  constexpr int thread_count = 10;
-  constexpr int logs_per_thread = 50;
+  constexpr int32_t thread_count = 10;
+  constexpr int32_t logs_per_thread = 50;
 
   /* 线程池和异常记录 */
   std::vector<std::thread> threads;
-  std::atomic<int> error_count{0};
+  std::atomic<int32_t> error_count{0};
 
   /* 并发测试 */
   threads.reserve(thread_count);
-  for (int thread_index = 0; thread_index < thread_count; ++thread_index) {
+  for (int32_t thread_index = 0; thread_index < thread_count; ++thread_index) {
     threads.emplace_back([token, thread_index, &error_count] {
       try {
-        for (int log_index = 0; log_index < logs_per_thread; ++log_index) {
+        for (int32_t log_index = 0; log_index < logs_per_thread; ++log_index) {
           KZ_LOG_INFO(token, " ", "Thread-", thread_index, " ", token, " Msg-",
                       log_index, " ", token);
           KZ_LOG_ERROR(token, " ", "Thread-", thread_index, " ", token, " Msg-",
@@ -104,7 +109,7 @@ TEST_F(KZLogTest, VerifyContentWithMultiThreads) {
   /* 读取文件内容 */
   std::stringstream content(read_file_content(log_file.value()));
   std::string one_line;
-  int valid_lines = 0;
+  int32_t valid_lines = 0;
 
   /* 验证每一行完整度 */
   while (std::getline(content, one_line)) {
@@ -112,7 +117,7 @@ TEST_F(KZLogTest, VerifyContentWithMultiThreads) {
       continue;
 
     /* 每一行必须3token */
-    int token_hits = 0;
+    int32_t token_hits = 0;
     size_t pos = 0;
 
     /* 循环查找 token 出现的次数 */
@@ -132,7 +137,7 @@ TEST_F(KZLogTest, VerifyContentWithMultiThreads) {
   }
 
   /* 验证日志完整度  */
-  constexpr int expect_lines = thread_count * logs_per_thread * 3;
+  constexpr int32_t expect_lines = thread_count * logs_per_thread * 3;
   EXPECT_EQ(valid_lines, expect_lines)
       << "Expected " << expect_lines << " lines, but got " << valid_lines;
 }
