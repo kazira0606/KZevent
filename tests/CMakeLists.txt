@@ -10,11 +10,11 @@ target_link_libraries(kz_unit_tests
 )
 
 target_compile_definitions(kz_unit_tests PRIVATE
-        # core_test用
+        # core_test配置宏
         KZEVENT_TEST_THREAD_COUNT=16
         KZEVENT_TEST_TASKS_PER_THREAD=50
         KZEVENT_TEST_DATA_SIZE=65536
-        # log_test用
+        # log_test配置宏
         KZ_EVENT_LOG_DIR="${CMAKE_BINARY_DIR}"
 )
 

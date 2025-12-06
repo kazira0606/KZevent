@@ -1,3 +1,4 @@
+#include <cassert>
 #include <chrono>
 #include <ctime>
 #include <filesystem>
@@ -15,12 +16,12 @@ namespace kzevent::log::detail {
 class LogManager {
 public:
   static LogManager &instance() {
-    static LogManager manager;
+    static LogManager manager{};
     return manager;
   }
 
   void write(const Level level, const std::string &payload) {
-    std::lock_guard write_lock(write_mtx_);
+    std::lock_guard write_lock{write_mtx_};
 
     /* 检查是否需要启用新文件 */
     if (!log_file_.is_open() || current_line_count_ >= kMaxLines) {
@@ -51,7 +52,7 @@ private:
     log_dir_ = fs::path(KZ_EVENT_LOG_DIR) / "kz_logs";
 
     /* 目录不存在->创建目录 */
-    if (std::error_code ec; !fs::exists(log_dir_)) {
+    if (std::error_code ec{}; !fs::exists(log_dir_)) {
       fs::create_directories(log_dir_, ec);
       if (ec) {
         std::cerr << "failed to create kz_logs directory: " << log_dir_
@@ -76,7 +77,7 @@ private:
     std::tm tm_buf{};
     localtime_r(&in_time_t, &tm_buf);
 
-    std::stringstream file_name;
+    std::stringstream file_name{};
     /* 拼接完整路径例: /home/user/project/kz_logs/kz_log_xxxx-xx-xx_xx-xx-xx.txt
      */
     file_name << "kz_log_" << std::put_time(&tm_buf, "%Y-%m-%d_%H-%M-%S")
@@ -104,16 +105,17 @@ private:
     case Level::kFatal:
       return "FATAL";
     default:
-      return "UNKNO";
+      assert(false && "invalid log level");
+      return "UNKNOWN";
     }
   }
 
   static constexpr int kMaxLines = 5000;
 
-  std::mutex write_mtx_;
-  std::ofstream log_file_;
-  fs::path log_dir_;
-  int current_line_count_ = 0;
+  std::mutex write_mtx_{};
+  std::ofstream log_file_{};
+  fs::path log_dir_{};
+  int current_line_count_{0};
 };
 
 void log_impl(const Level level, std::string &&payload) noexcept {

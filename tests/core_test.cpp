@@ -38,13 +38,13 @@ using namespace kzevent::core;
 #endif
 
 /* 测试参数 */
-static constexpr int32_t kThreadCount = KZEVENT_TEST_THREAD_COUNT;
-static constexpr int32_t kTasksPerThread = KZEVENT_TEST_TASKS_PER_THREAD;
-static constexpr size_t kDataSize = KZEVENT_TEST_DATA_SIZE;
+static constexpr int32_t kThreadCount{KZEVENT_TEST_THREAD_COUNT};
+static constexpr int32_t kTasksPerThread{KZEVENT_TEST_TASKS_PER_THREAD};
+static constexpr size_t kDataSize{KZEVENT_TEST_DATA_SIZE};
 
 /* 工具函数->设置非阻塞fd */
-static void set_nonblocking(int32_t fd) {
-  int32_t flags = fcntl(fd, F_GETFL, 0);
+static void set_nonblocking(const int32_t fd) {
+  const auto flags = fcntl(fd, F_GETFL, 0);
   ASSERT_NE(flags, -1)
       << "fcntl(F_GETFL) failed: "
       << std::error_code(errno, std::system_category()).message();
@@ -54,11 +54,11 @@ static void set_nonblocking(int32_t fd) {
 }
 
 /* 测试函数->写所有数据 */
-static bool write_all(int32_t fd, const void *buf, size_t len) {
-  const auto *p = static_cast<const char *>(buf);
-  size_t sent = 0;
+static bool write_all(const int32_t fd, const void *buf, size_t len) {
+  const auto *p{static_cast<const char *>(buf)};
+  size_t sent{0};
   while (sent < len) {
-    const ssize_t n = write(fd, p + sent, len - sent);
+    const auto n = write(fd, p + sent, len - sent);
     if (n < 0) {
       if (errno == EINTR)
         continue;
@@ -70,11 +70,11 @@ static bool write_all(int32_t fd, const void *buf, size_t len) {
 }
 
 /* 测试函数->读所有数据 */
-static bool read_all(int32_t fd, void *buf, size_t len) {
-  auto *p = static_cast<char *>(buf);
-  size_t get = 0;
+static bool read_all(const int32_t fd, void *buf, size_t len) {
+  auto *p{static_cast<char *>(buf)};
+  size_t get{0};
   while (get < len) {
-    const ssize_t n = read(fd, p + get, len - get);
+    const auto n = read(fd, p + get, len - get);
     if (n < 0) {
       if (errno == EINTR)
         continue;
@@ -93,16 +93,16 @@ static int32_t count_A(const std::string &string) {
 }
 
 /* 随机生成字符串 */
-static std::string random_string(size_t len) {
+static std::string random_string(const size_t len) {
   static const std::string stringset{"ABCDEFGHIJKLMN"};
   static const std::vector<char> charset{stringset.begin(), stringset.end()};
   static thread_local std::mt19937 gen{std::random_device{}()};
-  static thread_local std::uniform_int_distribution<int32_t> dis(
-      0, static_cast<int32_t>(charset.size() - 1));
+  static thread_local std::uniform_int_distribution<int32_t> dis{
+      0, static_cast<int32_t>(charset.size() - 1)};
 
   std::string ret{};
   ret.reserve(len);
-  for (size_t i = 0; i < len; ++i)
+  for (size_t i{0}; i < len; ++i)
     ret.push_back(charset[dis(gen)]);
   return ret;
 }
@@ -114,9 +114,8 @@ struct FailState {
   std::string msg_{};
 
   void set(std::string msg) {
-    bool expected = false;
-    if (failed_.compare_exchange_strong(expected, true)) {
-      std::lock_guard<std::mutex> lock(mtx_);
+    if (bool expected{false}; failed_.compare_exchange_strong(expected, true)) {
+      std::lock_guard lock{mtx_};
       msg_ = std::move(msg);
     }
   }
@@ -140,31 +139,32 @@ protected:
   std::unique_ptr<Loop> loop_{};
 };
 
-/* 多线程io+多线程heavy任务测试 */
+/*-------------------- 多线程io+多线程heavy任务测试 --------------------*/
 TEST_F(KZCoreTest, MultiThreadWithIoAndHeavyTask) {
   /* mock 持有LoopHandler的上层类 */
   class SessionTestIoHeavy
       : public std::enable_shared_from_this<SessionTestIoHeavy> {
   public:
-    SessionTestIoHeavy(Loop &loop, int32_t in_read_fd, int32_t out_write_fd,
-                       size_t data_size, std::shared_ptr<FailState> fail)
-        : in_read_channel_(loop, in_read_fd),
-          out_write_channel_(loop, out_write_fd), data_size_(data_size),
-          fail_(std::move(fail)) {
+    SessionTestIoHeavy(Loop &loop, const int32_t in_read_fd,
+                       const int32_t out_write_fd, const size_t data_size,
+                       std::shared_ptr<FailState> fail)
+        : in_read_channel_{loop, in_read_fd},
+          out_write_channel_{loop, out_write_fd}, data_size_{data_size},
+          fail_{std::move(fail)} {
       token_.reserve(data_size_);
     }
 
     void run() {
       in_read_channel_.update_event(
-          weak_from_this(), EventType::kRead, EventMode::kET,
-          [this](EventType event_types) { in_read_cb(event_types); });
+          weak_from_this(), EventType::kRead, EventMode::kDefault,
+          [this](const EventType event_types) { in_read_cb(event_types); });
     }
 
   private:
     void in_read_cb(EventType) {
       while (true) {
         std::array<char, 4096> buffer{};
-        const ssize_t n =
+        const auto n =
             read(in_read_channel_.get_fd(), buffer.data(), buffer.size());
 
         if (n > 0) {
@@ -174,7 +174,7 @@ TEST_F(KZCoreTest, MultiThreadWithIoAndHeavyTask) {
             /* 投递 heavy 线程 */
             in_read_channel_.post_heavy_task(
                 weak_from_this(),
-                [this, token = std::move(token_)] { compute_cb(token); });
+                [this, token{std::move(token_)}] { compute_cb(token); });
 
             token_.clear();
             token_.reserve(data_size_);
@@ -198,7 +198,7 @@ TEST_F(KZCoreTest, MultiThreadWithIoAndHeavyTask) {
 
     void compute_cb(const std::string &token) {
       /* 计算A的个数 */
-      int32_t count = count_A(token);
+      auto count = count_A(token);
 
       out_write_channel_.post_io_task(weak_from_this(), [this, count] {
         if (!write_all(out_write_channel_.get_fd(), &count, sizeof(count))) {
@@ -224,10 +224,10 @@ TEST_F(KZCoreTest, MultiThreadWithIoAndHeavyTask) {
   std::vector<std::array<int32_t, 2>> in_pipe(kThreadCount);
   std::vector<std::array<int32_t, 2>> out_pipe(kThreadCount);
 
-  std::vector<std::shared_ptr<SessionTestIoHeavy>> sessions;
+  std::vector<std::shared_ptr<SessionTestIoHeavy>> sessions{};
   sessions.reserve(kThreadCount);
 
-  for (int32_t i = 0; i < kThreadCount; ++i) {
+  for (int32_t i{0}; i < kThreadCount; ++i) {
     /* 创建one session per thread */
     ASSERT_EQ(::pipe(in_pipe[i].data()), 0)
         << std::error_code(errno, std::system_category()).message();
@@ -244,21 +244,21 @@ TEST_F(KZCoreTest, MultiThreadWithIoAndHeavyTask) {
   }
 
   /* 生成token和校验答案 */
-  const std::string payload = random_string(kDataSize);
-  const int32_t expected_count = count_A(payload);
+  const auto payload = random_string(kDataSize);
+  const auto expected_count = count_A(payload);
 
-  std::vector<std::thread> clients;
+  std::vector<std::thread> clients{};
   clients.reserve(kThreadCount);
 
   std::atomic<int32_t> success_tasks{0};
 
-  for (int32_t client_index = 0; client_index < kThreadCount; ++client_index) {
+  for (int32_t client_index{0}; client_index < kThreadCount; ++client_index) {
     /* 创建若干client线程 */
     clients.emplace_back([&, client_index] {
-      const int32_t write_fd = in_pipe[client_index][1];
-      const int32_t read_fd = out_pipe[client_index][0];
+      const auto write_fd{in_pipe[client_index][1]};
+      const auto read_fd{out_pipe[client_index][0]};
 
-      for (int32_t task = 0; task < kTasksPerThread; ++task) {
+      for (int32_t task{0}; task < kTasksPerThread; ++task) {
         if (fail->failed_.load())
           /* 只要出错就立即返回 */
           return;
@@ -271,7 +271,7 @@ TEST_F(KZCoreTest, MultiThreadWithIoAndHeavyTask) {
         }
 
         /* 读取结果 */
-        int32_t result = 0;
+        int32_t result{0};
         if (!read_all(read_fd, &result, sizeof(result))) {
           fail->set("client read error: " +
                     std::error_code(errno, std::system_category()).message());
@@ -297,7 +297,7 @@ TEST_F(KZCoreTest, MultiThreadWithIoAndHeavyTask) {
       t.join();
   }
 
-  for (int32_t i = 0; i < kThreadCount; ++i) {
+  for (int32_t i{0}; i < kThreadCount; ++i) {
     close(in_pipe[i][1]);
     close(out_pipe[i][0]);
   }
@@ -309,13 +309,13 @@ TEST_F(KZCoreTest, MultiThreadWithIoAndHeavyTask) {
   ASSERT_EQ(success_tasks.load(), kThreadCount * kTasksPerThread);
 }
 
-/* 测试生命周期管理 */
+/*-------------------- 测试生命周期管理 --------------------*/
 TEST_F(KZCoreTest, LifeCheckerKeepsAliveDuringCallback) {
   /* 同步回调进度：已进入回调(entered)，顶层类释放点(release)，已结束回调(finished)
    */
   struct Sync {
-    std::mutex mtx_;
-    std::condition_variable cv_;
+    std::mutex mtx_{};
+    std::condition_variable cv_{};
     bool entered_{false};
     bool release_{false};
     bool finished_{false};
@@ -326,8 +326,8 @@ TEST_F(KZCoreTest, LifeCheckerKeepsAliveDuringCallback) {
   std::array<int32_t, 2> in_pipe{};
   ASSERT_EQ(pipe(in_pipe.data()), 0)
       << std::error_code(errno, std::system_category()).message();
-  const int32_t read_fd = in_pipe[0];
-  const int32_t write_fd = in_pipe[1];
+  const auto read_fd{in_pipe[0]};
+  const auto write_fd{in_pipe[1]};
 
   /* 监听的fd设置非阻塞 */
   set_nonblocking(read_fd);
@@ -335,61 +335,72 @@ TEST_F(KZCoreTest, LifeCheckerKeepsAliveDuringCallback) {
   /* 被测试对象 */
   struct SessionTestLife
       : public std::enable_shared_from_this<SessionTestLife> {
-    SessionTestLife(Loop &loop, int fd, std::shared_ptr<Sync> sync)
-        : ch_(loop, fd), sync_(std::move(sync)) {}
+    SessionTestLife(Loop &loop, const int32_t fd, std::shared_ptr<Sync> sync)
+        : ch_{loop, fd}, sync_{std::move(sync)} {}
 
     void start() {
-      ch_.update_event(weak_from_this(), EventType::kRead, EventMode::kET,
-                       [this](EventType) {
-                         /* 读取一个字节 */
-                         char tmp{};
-                         read(ch_.get_fd(), &tmp, 1);
-                         /* 进入同步点->已进入 */
-                         {
-                           std::lock_guard<std::mutex> lock(sync_->mtx_);
-                           sync_->entered_ = true;
-                         }
-                         sync_->cv_.notify_one();
+      ch_.update_event(
+          weak_from_this(), EventType::kRead, EventMode::kDefault,
+          [this](EventType) {
+            /* 读取一个字节 */
+            char tmp{};
+            while (true) {
+              const auto n = read(ch_.get_fd(), &tmp, sizeof(tmp));
+              if (n > 0)
+                continue;
+              if (n < 0 && errno == EINTR)
+                continue;
+              if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+                break;
+              // n == 0(对端关闭) 或 其他错误：这里直接 break 即可
+              break;
+            }
+            /* 进入同步点->已进入 */
+            {
+              std::lock_guard lock{sync_->mtx_};
+              sync_->entered_ = true;
+            }
+            sync_->cv_.notify_one();
 
-                         /* 进入同步点->顶层类已释放 */
-                         {
-                           std::unique_lock<std::mutex> lk(sync_->mtx_);
-                           sync_->cv_.wait(lk, [&] { return sync_->release_; });
-                         }
+            /* 进入同步点->顶层类已释放 */
+            {
+              std::unique_lock lock{sync_->mtx_};
+              sync_->cv_.wait(lock, [&] { return sync_->release_; });
+            }
 
-                         /* 测试保活 */
-                         this->touch();
+            /* 测试保活 */
+            this->touch();
 
-                         /* 进入同步点->已结束 */
-                         {
-                           std::lock_guard<std::mutex> lk(sync_->mtx_);
-                           sync_->finished_ = true;
-                         }
-                         sync_->cv_.notify_one();
-                       });
+            /* 进入同步点->已结束 */
+            {
+              std::lock_guard lock{sync_->mtx_};
+              sync_->finished_ = true;
+            }
+            sync_->cv_.notify_one();
+          });
     }
 
     /* 测试保活，使用session的内存区域，如果已析构->UAF报错+ASAN报错 */
     void touch() { data_ ^= 0x5A5A5A5A; }
 
     LoopChannel ch_;
-    std::shared_ptr<Sync> sync_;
+    std::shared_ptr<Sync> sync_{};
     uint32_t data_{0x12345678};
   };
 
   /* 启动session */
   auto session = std::make_shared<SessionTestLife>(*loop_, read_fd, sync);
-  std::weak_ptr<SessionTestLife> session_checker = session;
+  const std::weak_ptr<SessionTestLife> session_checker{session};
   session->start();
 
   /* 投递一个任务 */
-  const char c = 'x';
+  constexpr char c{'x'};
   ASSERT_TRUE(write_all(write_fd, &c, 1))
       << std::error_code(errno, std::system_category()).message();
 
   /* 等待进入同步点->已进入 */
   {
-    std::unique_lock<std::mutex> lock(sync->mtx_);
+    std::unique_lock lock{sync->mtx_};
     /* 确保已进入（2s没进入即失败） */
     ASSERT_TRUE(sync->cv_.wait_for(lock, std::chrono::seconds(2),
                                    [&] { return sync->entered_; }));
@@ -399,14 +410,14 @@ TEST_F(KZCoreTest, LifeCheckerKeepsAliveDuringCallback) {
   session.reset();
 
   /* 确保成功释放session */
-  const bool expired_before_release = session_checker.expired();
+  const auto expired_before_release = session_checker.expired();
 
   EXPECT_FALSE(expired_before_release)
       << "session must still alive even release, keep alive failed.";
 
   /* 进入同步点->顶层类已释放 */
   {
-    std::lock_guard<std::mutex> lock(sync->mtx_);
+    std::lock_guard lock{sync->mtx_};
     sync->release_ = true;
   }
 
@@ -415,7 +426,7 @@ TEST_F(KZCoreTest, LifeCheckerKeepsAliveDuringCallback) {
 
   /* 进入同步点->已结束 */
   {
-    std::unique_lock<std::mutex> lock(sync->mtx_);
+    std::unique_lock lock{sync->mtx_};
     /* 确保已结束（2s没结束即失败）-> 结束即为保活测试成功 */
     ASSERT_TRUE(sync->cv_.wait_for(lock, std::chrono::seconds(2),
                                    [&] { return sync->finished_; }));
@@ -425,7 +436,7 @@ TEST_F(KZCoreTest, LifeCheckerKeepsAliveDuringCallback) {
   close(write_fd);
   // read_fd 将由 SessionTestLife 析构 -> LoopChannel 析构 -> unregister_fd 关闭
 
-  for (int i = 0; i < 200 && !session_checker.expired(); ++i) {
+  for (int32_t i{0}; i < 200 && !session_checker.expired(); ++i) {
     /* 等待session析构  */
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
@@ -433,12 +444,12 @@ TEST_F(KZCoreTest, LifeCheckerKeepsAliveDuringCallback) {
       << "session still alive after callback finished.";
 }
 
-/* disable_event() 之后回调不会再执行 */
+/*-------------------- 测试disable_event() --------------------*/
 TEST_F(KZCoreTest, DisableEventStopsCallback) {
   /* 同步点：用于等待 disable_event() 在 io 线程真正执行完 */
   struct Sync {
-    std::mutex mtx_;
-    std::condition_variable cv_;
+    std::mutex mtx_{};
+    std::condition_variable cv_{};
     bool disable_applied_{false};
   };
   auto sync = std::make_shared<Sync>();
@@ -447,8 +458,8 @@ TEST_F(KZCoreTest, DisableEventStopsCallback) {
   std::array<int32_t, 2> in_pipe{};
   ASSERT_EQ(::pipe(in_pipe.data()), 0)
       << std::error_code(errno, std::system_category()).message();
-  const int32_t read_fd = in_pipe[0];
-  const int32_t write_fd = in_pipe[1];
+  const auto read_fd{in_pipe[0]};
+  const auto write_fd{in_pipe[1]};
 
   /* 监听的fd设置非阻塞 */
   set_nonblocking(read_fd);
@@ -456,11 +467,12 @@ TEST_F(KZCoreTest, DisableEventStopsCallback) {
   /* 被测试对象 */
   struct SessionTestDisableEvent
       : public std::enable_shared_from_this<SessionTestDisableEvent> {
-    SessionTestDisableEvent(Loop &loop, int fd, std::shared_ptr<Sync> sync)
-        : ch_(loop, fd), sync_(std::move(sync)) {}
+    SessionTestDisableEvent(Loop &loop, const int32_t fd,
+                            std::shared_ptr<Sync> sync)
+        : ch_{loop, fd}, sync_{std::move(sync)} {}
 
     void start() {
-      ch_.update_event(weak_from_this(), EventType::kRead, EventMode::kET,
+      ch_.update_event(weak_from_this(), EventType::kRead, EventMode::kDefault,
                        [this](EventType) {
                          /* 如果 disable_event 生效，这里不应该被执行 */
                          cb_count_.fetch_add(1, std::memory_order_relaxed);
@@ -468,8 +480,7 @@ TEST_F(KZCoreTest, DisableEventStopsCallback) {
                          /* 读取 */
                          char tmp[64]{};
                          while (true) {
-                           const ssize_t n =
-                               read(ch_.get_fd(), tmp, sizeof(tmp));
+                           const auto n = read(ch_.get_fd(), tmp, sizeof(tmp));
                            if (n > 0) {
                              continue;
                            }
@@ -488,24 +499,24 @@ TEST_F(KZCoreTest, DisableEventStopsCallback) {
 
       /* 再投递一个 io 任务作为屏障：保证它执行时 disable 已处理完 */
       {
-        std::lock_guard<std::mutex> lock(sync_->mtx_);
+        std::lock_guard lock{sync_->mtx_};
         sync_->disable_applied_ = false;
       }
 
-      ch_.post_io_task(weak_from_this(), [s = sync_] {
-        std::lock_guard<std::mutex> lock(s->mtx_);
-        s->disable_applied_ = true;
-        s->cv_.notify_one();
+      ch_.post_io_task(weak_from_this(), [this] {
+        std::lock_guard lock{sync_->mtx_};
+        sync_->disable_applied_ = true;
+        sync_->cv_.notify_one();
       });
 
       /* 等待屏障任务执行完成（2s 还没完成说明 io 线程没跑起来/卡住） */
-      std::unique_lock<std::mutex> lock(sync_->mtx_);
+      std::unique_lock lock{sync_->mtx_};
       ASSERT_TRUE(sync_->cv_.wait_for(lock, std::chrono::seconds(2),
                                       [&] { return sync_->disable_applied_; }));
     }
 
     LoopChannel ch_;
-    std::shared_ptr<Sync> sync_;
+    std::shared_ptr<Sync> sync_{};
     std::atomic<int32_t> cb_count_{0};
   };
 
@@ -517,7 +528,7 @@ TEST_F(KZCoreTest, DisableEventStopsCallback) {
   session->disable_and_sync();
 
   /* 写入触发可读事件：如果 disable 正确，回调不应被调用 */
-  const char c = 'x';
+  constexpr char c{'x'};
   ASSERT_TRUE(write_all(write_fd, &c, 1))
       << std::error_code(errno, std::system_category()).message();
 
@@ -534,12 +545,12 @@ TEST_F(KZCoreTest, DisableEventStopsCallback) {
   session.reset();
 }
 
-/* stop() 后可以再次 start()，并且事件回调继续可用 */
+/*-------------------- 测试stop() 后可以再次 start() --------------------*/
 TEST_F(KZCoreTest, StopThenStartWorks) {
   /* 同步点：用于等待回调执行到达指定次数 */
   struct Sync {
     std::mutex mtx_;
-    std::condition_variable cv_;
+    std::condition_variable cv_{};
     int32_t handled_{0};
   };
   auto sync = std::make_shared<Sync>();
@@ -548,8 +559,8 @@ TEST_F(KZCoreTest, StopThenStartWorks) {
   std::array<int32_t, 2> in_pipe{};
   ASSERT_EQ(::pipe(in_pipe.data()), 0)
       << std::error_code(errno, std::system_category()).message();
-  const int32_t read_fd = in_pipe[0];
-  const int32_t write_fd = in_pipe[1];
+  const auto read_fd{in_pipe[0]};
+  const auto write_fd{in_pipe[1]};
 
   /* 监听的fd设置非阻塞 */
   set_nonblocking(read_fd);
@@ -557,20 +568,20 @@ TEST_F(KZCoreTest, StopThenStartWorks) {
   /* 被测试对象 */
   struct SessionTestRestart
       : public std::enable_shared_from_this<SessionTestRestart> {
-    SessionTestRestart(Loop &loop, int fd, std::shared_ptr<Sync> sync)
-        : ch_(loop, fd), sync_(std::move(sync)) {}
+    SessionTestRestart(Loop &loop, const int32_t fd, std::shared_ptr<Sync> sync)
+        : ch_{loop, fd}, sync_{std::move(sync)} {}
 
     void start() {
-      ch_.update_event(weak_from_this(), EventType::kRead, EventMode::kET,
+      ch_.update_event(weak_from_this(), EventType::kRead, EventMode::kDefault,
                        [this](EventType) { on_read(); });
     }
 
-    void on_read() {
+    void on_read() const {
       /* ET读取：读到 EAGAIN 为止 */
-      bool got_any = false;
+      bool got_any{false};
       while (true) {
         char tmp[256]{};
-        const ssize_t n = read(ch_.get_fd(), tmp, sizeof(tmp));
+        const auto n = read(ch_.get_fd(), tmp, sizeof(tmp));
         if (n > 0) {
           got_any = true;
           continue;
@@ -583,14 +594,14 @@ TEST_F(KZCoreTest, StopThenStartWorks) {
       }
 
       if (got_any) {
-        std::lock_guard<std::mutex> lock(sync_->mtx_);
+        std::lock_guard lock{sync_->mtx_};
         sync_->handled_ += 1;
         sync_->cv_.notify_one();
       }
     }
 
     LoopChannel ch_;
-    std::shared_ptr<Sync> sync_;
+    std::shared_ptr<Sync> sync_{};
   };
 
   auto session = std::make_shared<SessionTestRestart>(*loop_, read_fd, sync);
@@ -598,11 +609,11 @@ TEST_F(KZCoreTest, StopThenStartWorks) {
 
   /* 第一次触发：应当能回调一次 */
   {
-    const char c = 'a';
+    constexpr char c{'a'};
     ASSERT_TRUE(write_all(write_fd, &c, 1))
         << std::error_code(errno, std::system_category()).message();
 
-    std::unique_lock<std::mutex> lock(sync->mtx_);
+    std::unique_lock lock{sync->mtx_};
     ASSERT_TRUE(sync->cv_.wait_for(lock, std::chrono::seconds(2),
                                    [&] { return sync->handled_ >= 1; }));
   }
@@ -610,19 +621,19 @@ TEST_F(KZCoreTest, StopThenStartWorks) {
   /* stop 后：再写入不应被处理（因为 executor 已停止） */
   loop_->stop();
 
-  const char c = 'b';
+  constexpr char c{'b'};
   ASSERT_TRUE(write_all(write_fd, &c, 1))
       << std::error_code(errno, std::system_category()).message();
 
   {
-    std::lock_guard<std::mutex> lock(sync->mtx_);
+    std::lock_guard lock{sync->mtx_};
     EXPECT_EQ(sync->handled_, 1) << "callback executed while loop stopped.";
   }
 
   /* 再次 start：之前 stop 期间积累在 pipe 里的数据应被处理，回调次数变为 2 */
   loop_->start();
   {
-    std::unique_lock<std::mutex> lock(sync->mtx_);
+    std::unique_lock lock{sync->mtx_};
     ASSERT_TRUE(sync->cv_.wait_for(lock, std::chrono::seconds(2),
                                    [&] { return sync->handled_ >= 2; }));
   }

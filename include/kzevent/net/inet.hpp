@@ -1,19 +1,170 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <sys/stat.h>
+#include <type_traits>
+#include <utility>
+#include <vector>
 
-#include <netinet/in.h>
 #include <sys/socket.h>
-#include <sys/un.h>
+#include <sys/types.h>
+
+#include "kzevent/core.hpp"
+#include "kzevent/sys_error.hpp"
 
 namespace kzevent::net {
-
-class inet_address {
+/*-------------------- 网络地址  --------------------*/
+class InetAddr {
 public:
-  inet_address(const std::string &ip, uint16_t port);
+  InetAddr() = delete;
+  ~InetAddr() = default;
+
+  bool operator==(const InetAddr &other) const;
+
+  /* 静态工厂 */
+
+  static std::optional<InetAddr> make_ipv4(const std::string &ip,
+                                           uint16_t port);
+
+  static std::optional<InetAddr> make_ipv6(const std::string &ip, uint16_t port,
+                                           uint32_t scope_id = 0);
+
+  static std::optional<InetAddr> make_unix(const std::string &path);
+
+  static std::optional<InetAddr> make_abstract(const std::string &name);
+
+  static std::optional<InetAddr> make_from_sockaddr(const sockaddr *addr,
+                                                    socklen_t len);
+
+  /* sys交互接口 */
+  [[nodiscard]] const sockaddr *get_sockaddr() const;
+
+  [[nodiscard]] socklen_t get_socklen() const;
+
+  /* 信息接口 */
+  [[nodiscard]] std::string get_ip_or_path() const;
+
+  [[nodiscard]] uint16_t get_port() const;
 
 private:
+  /* ipv4/ipv6 构造函数 */
+  InetAddr(const std::string &ip, uint16_t port, sa_family_t type,
+           uint32_t scope_id);
+
+  /* unix 构造函数 */
+  InetAddr(const std::string &path, bool abstract);
+
+  /* ipv4/ipv6 反序列化构造函数 注 unix反序列化直接使用工厂->保证库统一格式 */
+  InetAddr(sockaddr_storage addr_storage, socklen_t socklen);
+
+  sockaddr_storage addr_storage_{};
+  socklen_t socklen_{};
 };
 
+/*-------------------- 网络工厂  --------------------*/
+[[nodiscard]] std::optional<core::LoopChannel>
+make_udp_channel(core::Loop &loop, const InetAddr &addr);
+
+/*-------------------- 网络接口  --------------------*/
+/* 发送函数允许的模板类型 */
+namespace detail {
+template <typename T> struct is_allowed_for_send : std::false_type {};
+
+template <>
+struct is_allowed_for_send<std::vector<std::uint8_t>> : std::true_type {};
+
+template <std::size_t N>
+struct is_allowed_for_send<std::array<std::uint8_t, N>> : std::true_type {};
+
+template <> struct is_allowed_for_send<std::string> : std::true_type {};
+
+template <> struct is_allowed_for_send<std::string_view> : std::true_type {};
+
+template <typename T>
+inline constexpr bool is_allowed_for_send_v = is_allowed_for_send<T>::value;
+
+/* 接收函数允许的模板类型 */
+template <typename T> struct is_allowed_for_recv : std::false_type {};
+
+template <>
+struct is_allowed_for_recv<std::vector<std::uint8_t>> : std::true_type {};
+
+template <std::size_t N>
+struct is_allowed_for_recv<std::array<std::uint8_t, N>> : std::true_type {};
+
+template <typename T>
+inline constexpr bool is_allowed_for_recv_v = is_allowed_for_recv<T>::value;
+
+/* 断言 */
+template <typename T> constexpr void is_allowed_type_for_send() {
+  using CleanType = std::remove_cv_t<std::remove_reference_t<T>>;
+  static_assert(is_allowed_for_send_v<CleanType>, "Type must be one of:\n"
+                                                  "std::vector < std::uint8_t >"
+                                                  "std::array<std::uint8_t, N>"
+                                                  "std::string"
+                                                  "std::string_view");
+}
+
+template <typename T> constexpr void is_allowed_type_for_recv() {
+  using CleanType = std::remove_cv_t<std::remove_reference_t<T>>;
+  static_assert(is_allowed_for_recv_v<CleanType>,
+                "Type must be one of:\n"
+                "std::vector < std::uint8_t >"
+                "std::array<std::uint8_t, N>");
+}
+} // namespace detail
+
+/* udp */
+template <typename container>
+inline void udp_send(core::LoopChannel &channel, const container &data,
+                     const InetAddr &addr) {
+  detail::is_allowed_type_for_send<container>();
+
+  if (const auto ret = sendto(channel.get_fd(), data.data(), data.size(), 0,
+                              addr.get_sockaddr(), addr.get_socklen());
+      ret >= 0) {
+    /* 成功 */
+    return;
+  } else {
+    if (errno == EAGAIN) {
+      /* 缓冲区已满, 丢包 */
+      return;
+    } else {
+      /* 系统错误 */
+      sys_error::error();
+    }
+  }
+}
+
+template <typename container>
+inline std::pair<ssize_t, std::optional<InetAddr>>
+udp_recv(core::LoopChannel &channel, container &buf) {
+  detail::is_allowed_type_for_recv<container>();
+
+  sockaddr_storage source_addr{};
+  socklen_t source_len{sizeof(source_addr)};
+
+  if (const auto ret =
+          recvfrom(channel.get_fd(), buf.data(), buf.size(), 0,
+                   reinterpret_cast<sockaddr *>(&source_addr), &source_len);
+      ret >= 0) {
+    /* 成功（有截断风险） */
+    return std::make_pair(
+        ret, InetAddr::make_from_sockaddr(
+                 reinterpret_cast<const sockaddr *>(&source_addr), source_len));
+  } else {
+    if (errno == EAGAIN) {
+      /* 当前无数据可读 */
+      return std::make_pair(ret, std::nullopt);
+    } else {
+      /* 系统错误 */
+      sys_error::error();
+      return std::make_pair(ret, std::nullopt);
+    }
+  }
+}
 } // namespace kzevent::net

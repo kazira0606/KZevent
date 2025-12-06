@@ -1,6 +1,7 @@
 set(KZEVENT_SOURCES
         core.cpp
         log.cpp
+        net/inet.cpp
         net/udp_socket.cpp
 )
 
