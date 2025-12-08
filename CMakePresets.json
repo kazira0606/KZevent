@@ -17,15 +17,6 @@
       }
     },
     {
-      "name": "debug",
-      "displayName": "Debug (Standard)",
-      "description": "Normal Debug Build",
-      "inherits": "default-base",
-      "cacheVariables": {
-        "ENABLE_ASAN": "OFF"
-      }
-    },
-    {
       "name": "asan",
       "displayName": "Debug + ASan (Memory)",
       "description": "Address Sanitizer & UBSan & Leak Sanitizer",
@@ -36,13 +27,6 @@
     }
   ],
   "testPresets": [
-    {
-      "name": "debug",
-      "configurePreset": "debug",
-      "output": {
-        "verbosity": "verbose"
-      }
-    },
     {
       "name": "asan",
       "configurePreset": "asan",

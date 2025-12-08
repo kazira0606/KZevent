@@ -18,28 +18,6 @@
 #include "kzevent/sys_error.hpp"
 
 namespace kzevent::core {
-/* EventType运算符重载 */
-constexpr EventType operator|(EventType a, EventType b) noexcept {
-  return static_cast<EventType>(static_cast<uint32_t>(a) |
-                                static_cast<uint32_t>(b));
-}
-
-constexpr EventType operator&(EventType a, EventType b) noexcept {
-  return static_cast<EventType>(static_cast<uint32_t>(a) &
-                                static_cast<uint32_t>(b));
-}
-
-/* EventMode运算符重载  */
-constexpr EventMode operator|(EventMode a, EventMode b) noexcept {
-  return static_cast<EventMode>(static_cast<uint32_t>(a) |
-                                static_cast<uint32_t>(b));
-}
-
-constexpr EventMode operator&(EventMode a, EventMode b) noexcept {
-  return static_cast<EventMode>(static_cast<uint32_t>(a) &
-                                static_cast<uint32_t>(b));
-}
-
 /* 事件类型位转换表 */
 template <typename T> struct EventToLocal {
   T kzevent_type;
@@ -73,7 +51,7 @@ constexpr uint32_t kz_to_local(const EventType events) {
 
 constexpr uint32_t kz_to_local(const EventMode modes) {
   /* 强制使用边缘触发 */
-  uint32_t local_modes{EPOLLET};
+  uint32_t local_modes{static_cast<uint32_t>(EPOLLET)};
 
   for (const auto &[mode, local_mode] : kEventModeToEpoll) {
     if ((modes & mode) != EventMode::kDefault) {
@@ -127,11 +105,7 @@ Loop::~Loop() {
           std::this_thread::get_id() != heavy_thread_.get_id()) &&
          "loop cannot be destructed in executor thread!");
 
-  try {
-    stop();
-  } catch (const std::exception &e) {
-    sys_error::error(e);
-  }
+  stop();
 
   /* 清理由于executor线程投递stop导致的残留joint */
   if (io_thread_.joinable()) {
@@ -161,12 +135,12 @@ Loop::~Loop() {
   KZ_LOG_INFO("loop delete successfully!");
 }
 
-void Loop::start() {
+bool Loop::start() {
   /* 清理由于run in loop投递stop导致的残留joint */
   if (io_thread_.joinable()) {
     if (std::this_thread::get_id() == io_thread_.get_id()) {
       KZ_LOG_ERROR("start() called from executor thread!");
-      return;
+      return false;
     }
     io_thread_.join();
     exe_state_.store(ExeState::Stopped);
@@ -175,7 +149,7 @@ void Loop::start() {
   if (heavy_thread_.joinable()) {
     if (std::this_thread::get_id() == heavy_thread_.get_id()) {
       KZ_LOG_ERROR("start() called from executor thread!");
-      return;
+      return false;
     }
     heavy_thread_.join();
     exe_state_.store(ExeState::Stopped);
@@ -185,19 +159,16 @@ void Loop::start() {
   if (auto expected{ExeState::Stopped};
       !exe_state_.compare_exchange_strong(expected, ExeState::Running)) {
     KZ_LOG_INFO("loop has started executor or loop is stopping executor!");
-    return;
+    return false;
   }
 
   /* 同时创建io_thread和heavy_thread */
-  try {
-    io_thread_ = std::thread{[this] { io_executor(); }};
-    heavy_thread_ = std::thread{[this] { heavy_executor(); }};
-  } catch (const std::exception &e) {
-    exe_state_.store(ExeState::Stopped);
-    sys_error::fatal(e);
-  }
+  io_thread_ = std::thread{[this] { io_executor(); }};
+  heavy_thread_ = std::thread{[this] { heavy_executor(); }};
 
   KZ_LOG_INFO("loop executor start successfully!");
+
+  return true;
 }
 
 void Loop::stop() {
@@ -320,12 +291,26 @@ void Loop::disable_fd(int32_t fd) {
 void Loop::wake_io_up() const {
   constexpr uint64_t val{1};
   if (const auto ret = write(io_wake_fd_, &val, sizeof(val)); ret < 0) {
-    if (errno == EAGAIN) {
-      return;
-    } else {
+    if (errno != EAGAIN) {
       sys_error::error();
     }
   }
+}
+
+void Loop::post_io_task(LoopTask task) {
+  {
+    std::lock_guard lock{io_queue_mtx_};
+    io_buffer_queue_.emplace_back(std::move(task));
+  }
+  wake_io_up();
+}
+
+void Loop::post_heavy_task(LoopTask task) {
+  {
+    std::lock_guard lock{heavy_queue_mtx_};
+    heavy_buffer_queue_.emplace_back(std::move(task));
+  }
+  wake_heavy_up();
 }
 
 void Loop::wake_heavy_up() { heavy_wake_cv_.notify_one(); }
@@ -410,57 +395,20 @@ LoopChannel::~LoopChannel() {
   }
 }
 
-LoopChannel::LoopChannel(LoopChannel &&other) noexcept { swap(other); }
+LoopChannel::LoopChannel(LoopChannel &&other) noexcept
+    : in_loop_(other.in_loop_), fd_(other.fd_) {
+  other.fd_ = -1;
+  other.in_loop_ = nullptr;
+}
 
 LoopChannel &LoopChannel::operator=(LoopChannel &&other) noexcept {
-  swap(other);
+  swap(*this, other);
   return *this;
 }
 
-void LoopChannel::swap(LoopChannel &other) noexcept {
-  std::swap(fd_, other.fd_);
-  std::swap(in_loop_, other.in_loop_);
-}
-
-void LoopChannel::update_event(LifeChecker life_checker, const EventType types,
-                               const EventMode modes, CallBack &cb) const {
-  if (fd_ == -1 || in_loop_ == nullptr) {
-    /* 无效的channel不允许访问 */
-    KZ_LOG_ERROR("invalid channel be accessed!");
-    return;
-  }
-
-  auto wrapper_cb = [life_checker = std::move(life_checker),
-                     cb](const EventType event_types) {
-    const auto keep_life{life_checker.lock()};
-    if (!keep_life) {
-      KZ_LOG_ERROR("executor can`t run callback! fd has closed!");
-      return;
-    }
-    cb(event_types);
-  };
-
-  in_loop_->enable_fd(fd_, types, modes, std::move(wrapper_cb));
-}
-
-void LoopChannel::update_event(LifeChecker life_checker, const EventType types,
-                               const EventMode modes, CallBack &&cb) const {
-  if (fd_ == -1 || in_loop_ == nullptr) {
-    /* 无效的channel不允许访问 */
-    KZ_LOG_ERROR("invalid channel be accessed!");
-    return;
-  }
-
-  auto wrapper_cb = [life_checker = std::move(life_checker),
-                     cb = std::move(cb)](const EventType event_types) {
-    const auto keep_life{life_checker.lock()};
-    if (!keep_life) {
-      return;
-    }
-    cb(event_types);
-  };
-
-  in_loop_->enable_fd(fd_, types, modes, std::move(wrapper_cb));
+void swap(LoopChannel &a, LoopChannel &b) noexcept {
+  std::swap(a.fd_, b.fd_);
+  std::swap(a.in_loop_, b.in_loop_);
 }
 
 void LoopChannel::disable_event() const {

@@ -31,6 +31,28 @@ enum class EventMode : uint32_t {
   kOneShot = 1U << 0,
 };
 
+/* EventType运算符重载 */
+constexpr EventType operator|(EventType a, EventType b) noexcept {
+  return static_cast<EventType>(static_cast<uint32_t>(a) |
+                                static_cast<uint32_t>(b));
+}
+
+constexpr EventType operator&(EventType a, EventType b) noexcept {
+  return static_cast<EventType>(static_cast<uint32_t>(a) &
+                                static_cast<uint32_t>(b));
+}
+
+/* EventMode运算符重载  */
+constexpr EventMode operator|(EventMode a, EventMode b) noexcept {
+  return static_cast<EventMode>(static_cast<uint32_t>(a) |
+                                static_cast<uint32_t>(b));
+}
+
+constexpr EventMode operator&(EventMode a, EventMode b) noexcept {
+  return static_cast<EventMode>(static_cast<uint32_t>(a) &
+                                static_cast<uint32_t>(b));
+}
+
 using CallBack = std::function<void(EventType)>;
 using LoopTask = std::function<void()>;
 using LifeChecker = std::weak_ptr<void>;
@@ -52,7 +74,7 @@ public:
 
   Loop &operator=(Loop &&) = delete;
 
-  void start();
+  bool start();
 
   void stop();
 
@@ -77,25 +99,9 @@ private:
 
   void wake_heavy_up();
 
-  template <typename Fun> void post_io_task(Fun &&task) {
-    if (std::this_thread::get_id() == io_thread_.get_id()) {
-      task();
-    } else {
-      std::lock_guard lock{io_queue_mtx_};
-      io_buffer_queue_.emplace_back(std::forward<Fun>(task));
-      wake_io_up();
-    }
-  }
+  void post_io_task(LoopTask task);
 
-  template <typename Fun> void post_heavy_task(Fun &&task) {
-    if (std::this_thread::get_id() == heavy_thread_.get_id()) {
-      task();
-    } else {
-      std::lock_guard lock{heavy_queue_mtx_};
-      heavy_buffer_queue_.emplace_back(std::forward<Fun>(task));
-      wake_heavy_up();
-    }
-  }
+  void post_heavy_task(LoopTask task);
 
   /* Loop执行队列执行器 */
   void io_executor();
@@ -143,55 +149,19 @@ public:
 
   LoopChannel &operator=(LoopChannel &&other) noexcept;
 
-  void swap(LoopChannel &other) noexcept;
+  friend void swap(LoopChannel &a, LoopChannel &b) noexcept;
 
+  template <typename Fun>
   void update_event(LifeChecker life_checker, EventType types, EventMode modes,
-                    CallBack &cb) const;
-
-  void update_event(LifeChecker life_checker, EventType types, EventMode modes,
-                    CallBack &&cb) const;
+                    Fun cb) const;
 
   void disable_event() const;
 
   template <typename Fun>
-  void post_io_task(LifeChecker life_checker, Fun &&task) const {
-    if (fd_ == -1 || in_loop_ == nullptr) {
-      /* 无效的channel不允许访问 */
-      KZ_LOG_ERROR("invalid channel be accessed!");
-      return;
-    }
-
-    auto task_wrapper = [life_checker = std::move(life_checker),
-                         task = std::forward<Fun>(task)]() mutable {
-      const auto keep_life{life_checker.lock()};
-      if (!keep_life) {
-        return;
-      }
-      task();
-    };
-
-    in_loop_->post_io_task(std::move(task_wrapper));
-  }
+  void post_io_task(LifeChecker life_checker, Fun task) const;
 
   template <typename Fun>
-  void post_heavy_task(LifeChecker life_checker, Fun &&task) const {
-    if (fd_ == -1 || in_loop_ == nullptr) {
-      /* 无效的channel不允许访问 */
-      KZ_LOG_ERROR("invalid channel be accessed!");
-      return;
-    }
-
-    auto task_wrapper = [life_checker = std::move(life_checker),
-                         task = std::forward<Fun>(task)]() mutable {
-      const auto keep_life{life_checker.lock()};
-      if (!keep_life) {
-        return;
-      }
-      task();
-    };
-
-    in_loop_->post_heavy_task(std::move(task_wrapper));
-  }
+  void post_heavy_task(LifeChecker life_checker, Fun task) const;
 
   [[nodiscard]] int32_t get_fd() const;
 
@@ -199,4 +169,69 @@ private:
   Loop *in_loop_{nullptr};
   int32_t fd_{-1};
 };
+
+/*-------------------- 模板实现 --------------------*/
+template <typename Fun>
+void LoopChannel::update_event(LifeChecker life_checker, const EventType types,
+                               const EventMode modes, Fun cb) const {
+  if (fd_ == -1 || in_loop_ == nullptr) {
+    /* 无效的channel不允许访问 */
+    KZ_LOG_ERROR("invalid channel be accessed!");
+    return;
+  }
+
+  auto wrapper_cb = [life_checker = std::move(life_checker),
+                     cb = std::move(cb)](const EventType event_types) mutable {
+    const auto keep_life{life_checker.lock()};
+    if (!keep_life) {
+      KZ_LOG_ERROR("executor can`t run callback! fd has closed!");
+      return;
+    }
+    cb(event_types);
+  };
+
+  in_loop_->enable_fd(fd_, types, modes, std::move(wrapper_cb));
+}
+
+template <typename Fun>
+void LoopChannel::post_io_task(LifeChecker life_checker, Fun task) const {
+  if (fd_ == -1 || in_loop_ == nullptr) {
+    /* 无效的channel不允许访问 */
+    KZ_LOG_ERROR("invalid channel be accessed!");
+    return;
+  }
+
+  auto wrapper_task = [life_checker = std::move(life_checker),
+                       task = std::move(task)]() mutable {
+    const auto keep_life{life_checker.lock()};
+    if (!keep_life) {
+      return;
+    }
+    task();
+  };
+
+  in_loop_->post_io_task(std::move(wrapper_task));
+}
+
+template <typename Fun>
+void LoopChannel::post_heavy_task(LifeChecker life_checker, Fun task) const {
+  {
+    if (fd_ == -1 || in_loop_ == nullptr) {
+      /* 无效的channel不允许访问 */
+      KZ_LOG_ERROR("invalid channel be accessed!");
+      return;
+    }
+
+    auto wrapper_task = [life_checker = std::move(life_checker),
+                         task = std::move(task)]() mutable {
+      const auto keep_life{life_checker.lock()};
+      if (!keep_life) {
+        return;
+      }
+      task();
+    };
+
+    in_loop_->post_heavy_task(std::move(wrapper_task));
+  }
+}
 } // namespace kzevent::core

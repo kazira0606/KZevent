@@ -59,7 +59,7 @@ protected:
     }
   }
 
-  fs::path log_dir_ = fs::path(KZ_EVENT_LOG_DIR) / "kz_logs";
+  fs::path log_dir_ = fs::path(KZEVENT_LOG_DIR) / "kz_logs";
 };
 
 /*-------------------- 测试log --------------------*/

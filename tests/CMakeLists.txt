@@ -1,6 +1,7 @@
 add_executable(kz_unit_tests
         core_test.cpp
         log_test.cpp
+        net_tests/udp_socket_test.cpp
 )
 
 target_link_libraries(kz_unit_tests
@@ -15,7 +16,9 @@ target_compile_definitions(kz_unit_tests PRIVATE
         KZEVENT_TEST_TASKS_PER_THREAD=50
         KZEVENT_TEST_DATA_SIZE=65536
         # log_test配置宏
-        KZ_EVENT_LOG_DIR="${CMAKE_BINARY_DIR}"
+        KZEVENT_LOG_DIR="${CMAKE_BINARY_DIR}"
+        # udp_socket_test配置宏
+        KZEVENT_CLIENT_NUM=100
 )
 
 include(GoogleTest)
