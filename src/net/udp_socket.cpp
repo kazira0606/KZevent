@@ -3,6 +3,7 @@
 #include <memory>
 
 #include <arpa/inet.h>
+#include <unistd.h>
 #include <utility>
 
 #include "kzevent/core.hpp"
@@ -17,7 +18,8 @@ UdpNode::~UdpNode() { stop(); }
 std::shared_ptr<UdpNode> UdpNode::make_udp_node(core::Loop &loop,
                                                 const InetAddr &local) {
   struct EnableMakeShared : public UdpNode {
-    EnableMakeShared(core::Loop &loop, const InetAddr &local) : UdpNode(loop, local) {}
+    EnableMakeShared(core::Loop &loop, const InetAddr &local)
+        : UdpNode(loop, local) {}
   };
   return std::make_shared<EnableMakeShared>(loop, local);
 }
@@ -30,7 +32,8 @@ void UdpNode::set_error_cb(ErrorCallBack cb) noexcept {
   error_cb_ = std::move(cb);
 }
 
-UdpNode::UdpNode(core::Loop &loop, const InetAddr &local) : UdpSocket(loop, local) {}
+UdpNode::UdpNode(core::Loop &loop, const InetAddr &local)
+    : UdpSocket(loop, local) {}
 
 void UdpNode::on_read(std::vector<uint8_t> data, const InetAddr &source) {
   if (read_cb_ == nullptr) {
@@ -52,10 +55,12 @@ void UdpNode::on_error() {
 /*-------------------- UDP client  --------------------*/
 UdpClient::~UdpClient() { stop(); }
 
-std::shared_ptr<UdpClient>
-UdpClient::make_udp_client(core::Loop &loop, const InetAddr &local, const InetAddr &source) {
+std::shared_ptr<UdpClient> UdpClient::make_udp_client(core::Loop &loop,
+                                                      const InetAddr &local,
+                                                      const InetAddr &source) {
   struct EnableMakeShared : public UdpClient {
-    EnableMakeShared(core::Loop &loop, const InetAddr &local, const InetAddr &source)
+    EnableMakeShared(core::Loop &loop, const InetAddr &local,
+                     const InetAddr &source)
         : UdpClient(loop, local, source) {}
   };
   return std::make_shared<EnableMakeShared>(loop, local, source);
@@ -98,12 +103,15 @@ void UdpClient::on_error() {
 
 /*-------------------- UDP session  --------------------*/
 std::shared_ptr<UdpServer::UdpSession> UdpServer::UdpSession::make_udp_session(
-    const std::shared_ptr<UdpServer> &server, const InetAddr &source) {
+    const std::shared_ptr<UdpServer> &server, const InetAddr &source,
+    std::chrono::steady_clock::time_point time_stamp) {
   struct EnableMakeShared : public UdpServer::UdpSession {
-    EnableMakeShared(const std::shared_ptr<UdpServer> &server, const InetAddr &source)
-        : UdpServer::UdpSession(server, source) {}
+    EnableMakeShared(const std::shared_ptr<UdpServer> &server,
+                     const InetAddr &source,
+                     std::chrono::steady_clock::time_point time_stamp)
+        : UdpServer::UdpSession(server, source, time_stamp) {}
   };
-  return std::make_shared<EnableMakeShared>(server, source);
+  return std::make_shared<EnableMakeShared>(server, source, time_stamp);
 }
 
 void UdpServer::UdpSession::set_user_context(
@@ -116,19 +124,54 @@ UdpServer::UdpSession::get_user_context() const noexcept {
   return user_context_;
 }
 
-UdpServer::UdpSession::UdpSession(const std::shared_ptr<UdpServer> &server,
-                                  const InetAddr &source)
-    : source_(source), server_(server) {}
+UdpServer::UdpSession::UdpSession(
+    const std::shared_ptr<UdpServer> &server, const InetAddr &source,
+    std::chrono::steady_clock::time_point time_stamp)
+    : source_(source), time_stamp_(time_stamp), server_(server) {}
 
 /*-------------------- UDP server  --------------------*/
 UdpServer::~UdpServer() { stop(); }
-std::shared_ptr<UdpServer> UdpServer::make_udp_server(core::Loop &loop,
-                                                      const InetAddr &local) {
+std::shared_ptr<UdpServer>
+UdpServer::make_udp_server(core::Loop &loop, const InetAddr &local,
+                           uint64_t session_timeout_ms) {
   struct EnableMakeShared : public UdpServer {
-    EnableMakeShared(core::Loop &loop, const InetAddr &local)
-        : UdpServer(loop, local) {}
+    EnableMakeShared(core::Loop &loop, const InetAddr &local,
+                     uint64_t session_timeout_ms)
+        : UdpServer(loop, local, session_timeout_ms) {}
   };
-  return std::make_shared<EnableMakeShared>(loop, local);
+  return std::make_shared<EnableMakeShared>(loop, local, session_timeout_ms);
+}
+
+void UdpServer::start() {
+  auto task = [this](const core::EventType) {
+    const auto now = std::chrono::steady_clock::now();
+
+    auto it = sessions_.begin();
+    while (it != sessions_.end()) {
+      /* 扫描所有会话距离上一次接收数据的时间间隔 */
+      const auto duration = now - it->second->time_stamp_;
+
+      if (duration > std::chrono::milliseconds(session_timeout_ms_)) {
+        /* 会话超时 */
+        it = sessions_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+    uint64_t val;
+    while (read(timer_channel_.get_fd(), &val, sizeof(val)) > 0)
+      ;
+    if (errno != EAGAIN) {
+      sys_error::fatal();
+    }
+  };
+
+  timer_channel_.update_event(weak_from_this(), core::EventType::kRead,
+                              core::EventMode::kDefault, std::move(task));
+
+  /* 基类启动 */
+  UdpSocket::start();
 }
 
 void UdpServer::set_new_session_cb(ServerCallBack cb) noexcept {
@@ -143,8 +186,30 @@ void UdpServer::set_error_cb(ErrorCallBack cb) noexcept {
   error_cb_ = std::move(cb);
 }
 
-UdpServer::UdpServer(core::Loop &loop, const InetAddr &local)
-    : UdpSocket(loop, local) {}
+UdpServer::UdpServer(core::Loop &loop, const InetAddr &local,
+                     uint64_t session_timeout_ms)
+    : UdpSocket(loop, local),
+      timer_channel_([&loop, session_timeout_ms]() -> core::LoopChannel {
+        /* 默认策略，10倍频率扫描->误差10% */
+        auto scan_time = session_timeout_ms / 10;
+
+        if (scan_time < 100) {
+          /* 最高扫描频率->100ms扫描一次降低cpu负载 */
+          scan_time = 100;
+        } else if (scan_time > 10000) {
+          /* 最低扫描频率->10000ms扫描一次保证内存占用 */
+          scan_time = 10000;
+        }
+
+        auto ch = make_timer_channel(loop, scan_time);
+
+        if (!ch.has_value()) {
+          throw std::runtime_error("make timer channel failed");
+        }
+
+        return std::move(ch).value();
+      }()),
+      session_timeout_ms_(session_timeout_ms) {}
 
 void UdpServer::on_read(std::vector<uint8_t> data, const InetAddr &source) {
   if (read_cb_ == nullptr && new_session_cb_ == nullptr) {
@@ -158,7 +223,8 @@ void UdpServer::on_read(std::vector<uint8_t> data, const InetAddr &source) {
   if (it == sessions_.end()) {
     /* 新会话 */
     const auto new_session = UdpSession::make_udp_session(
-        std::static_pointer_cast<UdpServer>(shared_from_this()), source);
+        std::static_pointer_cast<UdpServer>(shared_from_this()), source,
+        std::chrono::steady_clock::now());
 
     /* 加入管理 */
     sessions_.emplace(source, new_session);
@@ -178,6 +244,7 @@ void UdpServer::on_read(std::vector<uint8_t> data, const InetAddr &source) {
   if (read_cb_ == nullptr) {
     return;
   }
+  it->second->time_stamp_ = std::chrono::steady_clock::now();
   read_cb_(it->second, std::move(data));
 }
 

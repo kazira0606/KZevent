@@ -130,7 +130,7 @@ TEST_F(KZUdpTest, EchoUdpNodeTestIpv4) {
   EXPECT_EQ(success_count.load(), KZEVENT_CLIENT_NUM);
 }
 
-/*-------------------- UdpNode和UdpClient stop测试 --------------------*/
+/*-------------------- UdpNode + UdpClient stop测试 --------------------*/
 TEST_F(KZUdpTest, UdpNodeStopTest) {
   using namespace net::udp;
   constexpr uint16_t server_port{8888};
@@ -336,4 +336,112 @@ TEST_F(KZUdpTest, EchoUdpServerTestIpv6_ContextFeature) {
 
   /* 验证成功数量 */
   EXPECT_EQ(success_count.load(), KZEVENT_CLIENT_NUM);
+}
+
+/*-------------------- UdpServer Session超时清理测试 --------------------*/
+TEST_F(KZUdpTest, UdpServerSessionTimeoutTest) {
+  using namespace kzevent::net::udp;
+  constexpr uint16_t server_port{9999};
+  /* 设置较短的超时时间以便测试 (1000ms) */
+  constexpr uint64_t session_timeout_ms{1000};
+
+  /* 协议数据定义 */
+  const std::vector<uint8_t> msg_ping{'P', 'i', 'n', 'g'};
+
+  const std::string str_first = "First In";
+  const std::vector<uint8_t> resp_first(str_first.begin(), str_first.end());
+
+  const std::string str_exist = "Exist";
+  const std::vector<uint8_t> resp_exist(str_exist.begin(), str_exist.end());
+
+  /* 创建 Server */
+  const auto server_addr = net::InetAddr::make_ipv4("0.0.0.0", server_port);
+  ASSERT_TRUE(server_addr.has_value());
+
+  const auto server = UdpServer::make_udp_server(*loop_, server_addr.value(),
+                                                 session_timeout_ms);
+  ASSERT_TRUE(server);
+
+  /* 设置新会话回调：回复 "First In" */
+  server->set_new_session_cb([&](const auto &session, auto data) {
+    session->post_send_task(resp_first);
+  });
+
+  /* 设置已有会话回调：回复 "Exist" */
+  server->set_read_cb([&](const auto &session, auto data) {
+    session->post_send_task(resp_exist);
+  });
+
+  server->start();
+
+  /* 创建 Client */
+  const auto client_addr = net::InetAddr::make_ipv4("0.0.0.0", 0);
+  ASSERT_TRUE(client_addr.has_value());
+
+  const auto target_addr = net::InetAddr::make_ipv4("127.0.0.1", server_port);
+  ASSERT_TRUE(target_addr.has_value());
+
+  const auto client = UdpClient::make_udp_client(*loop_, client_addr.value(),
+                                                 target_addr.value());
+  ASSERT_TRUE(client);
+
+  /* 流程控制 Promise */
+  auto promise_step_1 = std::make_shared<std::promise<void>>();
+  auto promise_step_2 = std::make_shared<std::promise<void>>();
+  auto promise_step_3 = std::make_shared<std::promise<void>>();
+
+  /* 状态机：0=初始, 1=已收到第一次, 2=已收到第二次, 3=超时测试 */
+  std::atomic<int> stage{0};
+
+  /* 设置 Client 回调 */
+  client->set_read_cb([&, promise_step_1, promise_step_2,
+                       promise_step_3](const auto &udp_client, auto data) {
+    int current_stage = stage.load();
+
+    if (current_stage == 0) {
+      /* 预期：First In */
+      EXPECT_EQ(data, resp_first);
+      stage = 1;
+      promise_step_1->set_value();
+    } else if (current_stage == 1) {
+      /* 预期：Exist */
+      EXPECT_EQ(data, resp_exist);
+      stage = 2;
+      promise_step_2->set_value();
+    } else if (current_stage == 3) {
+      /* 预期：超时后被视为新连接 -> First In */
+      EXPECT_EQ(data, resp_first);
+      promise_step_3->set_value();
+    }
+  });
+
+  client->start();
+
+  /* 阶段一：建立新连接 */
+  client->post_send_task(msg_ping);
+
+  /* 等待收到 "First In" */
+  ASSERT_EQ(promise_step_1->get_future().wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+
+  /* 阶段二：立即再次发送 (测试会话保持) */
+  client->post_send_task(msg_ping);
+
+  /* 等待收到 "Exist" */
+  ASSERT_EQ(promise_step_2->get_future().wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+
+  /* 阶段三：模拟超时 */
+  /* 休眠时间 (1101ms) > 超时时间 (1000ms) + 库误差，确保 Server 执行清理 */
+  std::this_thread::sleep_for(std::chrono::milliseconds(1101));
+
+  /* 更新测试状态 */
+  stage = 3;
+
+  /* 再次发送数据 */
+  client->post_send_task(msg_ping);
+
+  /* 等待收到 "First In" (验证 Session 已被清理重建) */
+  ASSERT_EQ(promise_step_3->get_future().wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
 }

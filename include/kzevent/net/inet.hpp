@@ -68,6 +68,9 @@ private:
 [[nodiscard]] std::optional<core::LoopChannel>
 make_udp_channel(core::Loop &loop, const InetAddr &addr);
 
+[[nodiscard]] std::optional<core::LoopChannel>
+make_timer_channel(core::Loop &loop, uint64_t timeout_ms);
+
 /*-------------------- 模板限制  --------------------*/
 /* 发送函数允许的模板类型 */
 namespace detail {
@@ -151,7 +154,6 @@ private:
 
   virtual void on_error() = 0;
 
-  /* loop channel */
   core::LoopChannel udp_channel_;
 
   /* 接收缓冲区 */

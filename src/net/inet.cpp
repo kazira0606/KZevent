@@ -5,6 +5,7 @@
 #include <cstring>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/timerfd.h>
 #include <sys/types.h>
 #include <sys/un.h>
 #include <vector>
@@ -400,6 +401,37 @@ std::optional<core::LoopChannel> make_udp_channel(core::Loop &loop,
   return udp_channel;
 }
 
+std::optional<core::LoopChannel> make_timer_channel(core::Loop &loop,
+                                                    uint64_t timeout_ms) {
+  const auto fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+
+  if (fd == -1) {
+    sys_error::error();
+    return std::nullopt;
+  }
+
+  /* 立即移交fd便于RAII */
+  core::LoopChannel timer_channel(loop, fd);
+
+  const auto sec = timeout_ms / 1000;
+  const auto nsec = (timeout_ms % 1000) * 1000000;
+
+  struct itimerspec ts = {};
+  /* 首次延迟 */
+  ts.it_value.tv_sec = static_cast<time_t>(sec);
+  ts.it_value.tv_nsec = static_cast<long>(nsec);
+
+  /* 后续延迟 */
+  ts.it_interval.tv_sec = static_cast<time_t>(sec);
+  ts.it_interval.tv_nsec = static_cast<long>(nsec);
+
+  if (const auto ret = timerfd_settime(fd, 0, &ts, nullptr); ret == -1) {
+    sys_error::error();
+    return std::nullopt;
+  }
+
+  return timer_channel;
+}
 /*-------------------- 网络基类  --------------------*/
 UdpSocket::UdpSocket(core::Loop &loop, const InetAddr &local)
     : udp_channel_([&]() -> core::LoopChannel {
