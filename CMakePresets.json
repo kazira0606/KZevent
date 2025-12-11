@@ -12,8 +12,8 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_BUILD_TYPE": "Debug"
+        "ENABLE_ASAN": "OFF",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     },
     {
@@ -22,7 +22,17 @@
       "description": "Address Sanitizer & UBSan & Leak Sanitizer",
       "inherits": "default-base",
       "cacheVariables": {
-        "ENABLE_ASAN": "ON"
+        "ENABLE_ASAN": "ON",
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "description": "Release build",
+      "inherits": "default-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
       }
     }
   ],
@@ -30,6 +40,13 @@
     {
       "name": "asan",
       "configurePreset": "asan",
+      "output": {
+        "verbosity": "verbose"
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
       "output": {
         "verbosity": "verbose"
       }

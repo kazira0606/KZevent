@@ -106,6 +106,7 @@ private:
       return "FATAL";
     default:
       assert(false && "invalid log level");
+      return "UNKNOWN";
     }
   }
 

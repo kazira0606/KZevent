@@ -5,7 +5,9 @@
 #include <cstring>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/un.h>
+#include <vector>
 
 #include "kzevent/core.hpp"
 #include "kzevent/log.hpp"
@@ -69,6 +71,16 @@ bool InetAddr::operator==(const InetAddr &other) const noexcept {
   default:
     return false;
   }
+}
+
+bool InetAddr::operator!=(const InetAddr &other) const noexcept {
+  return !(*this == other);
+}
+
+size_t InetAddr::hash() const noexcept {
+  const std::string_view bytes(reinterpret_cast<const char *>(&addr_storage_),
+                               socklen_);
+  return std::hash<std::string_view>{}(bytes);
 }
 
 /* 静态工厂 */
@@ -356,7 +368,7 @@ InetAddr::InetAddr(const sockaddr_storage &addr_storage,
   addr_storage_ = addr_storage;
   socklen_ = socklen;
 }
-/*-------------------- 网络工厂  --------------------*/
+/*-------------------- Channel工厂  --------------------*/
 std::optional<core::LoopChannel> make_udp_channel(core::Loop &loop,
                                                   const InetAddr &addr) {
   const auto fd = socket(addr.get_sockaddr()->sa_family,
@@ -387,4 +399,48 @@ std::optional<core::LoopChannel> make_udp_channel(core::Loop &loop,
 
   return udp_channel;
 }
+
+/*-------------------- 网络基类  --------------------*/
+UdpSocket::UdpSocket(core::Loop &loop, const InetAddr &local)
+    : udp_channel_([&]() -> core::LoopChannel {
+        auto ch = make_udp_channel(loop, local);
+
+        if (!ch.has_value()) {
+          throw std::runtime_error("make udp channel failed");
+        }
+
+        return std::move(ch).value();
+      }()) {}
+
+void UdpSocket::start() {
+  auto cb = [this](const core::EventType event_types) {
+    if ((event_types & core::EventType::kRead) == core::EventType::kRead) {
+      /* 可读事件,循环读取缓冲区所有的包 */
+      while (true) {
+        const auto [ret, source_addr] = udp_recv(udp_channel_, recv_buf_);
+        if (!source_addr.has_value()) {
+          /* EAGAIN或系统错误(有log) */
+          break;
+        }
+
+        auto to_user =
+            std::vector<uint8_t>{recv_buf_.begin(), recv_buf_.begin() + ret};
+        on_read(std::move(to_user), source_addr.value());
+      }
+    }
+
+    if ((event_types & core::EventType::kError) == core::EventType::kError) {
+      /* 错误事件 */
+      on_error();
+    }
+
+    /* 其他事件暂不支持 */
+  };
+
+  udp_channel_.update_event(weak_from_this(),
+                            core::EventType::kRead | core::EventType::kError,
+                            core::EventMode::kDefault, std::move(cb));
+}
+
+void UdpSocket::stop() const { udp_channel_.disable_event(); }
 } // namespace kzevent::net

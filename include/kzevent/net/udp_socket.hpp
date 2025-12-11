@@ -1,80 +1,194 @@
 #pragma once
 
-#include <cstdint>
 #include <memory>
-#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "kzevent/core.hpp"
 #include "kzevent/net/inet.hpp"
 
 namespace kzevent::net::udp {
-class UdpNode;
 
-/* 回调类型 */
-using ReadCallBack =
-    std::function<void(const std::shared_ptr<UdpNode> &udp_node,
-                       std::vector<std::uint8_t> &data, InetAddr source)>;
+/* 通用回调类型 */
 using ErrorCallBack = std::function<void()>;
 
-/* udp类型  */
-enum class UdpType { kUdpIpv4, kUdpIpv6, kUnix, kAbstract };
-
 /*-------------------- UDP node  --------------------*/
-class UdpNode : public std::enable_shared_from_this<UdpNode> {
+class UdpNode : public UdpSocket {
+  /* node 接收回调 */
+  using NodeCallBack =
+      std::function<void(const std::shared_ptr<UdpNode> &udp_node,
+                         std::vector<uint8_t> data, InetAddr source)>;
+
 public:
-  ~UdpNode() = default;
+  ~UdpNode() override;
 
-  /* 静态工厂，只允许shared_ptr管理 */
-  static std::shared_ptr<UdpNode> make_by_any(core::Loop &loop, UdpType type,
-                                              uint16_t port);
+  /* 静态工厂 */
+  static std::shared_ptr<UdpNode> make_udp_node(core::Loop &loop,
+                                                const InetAddr &local);
 
-  static std::shared_ptr<UdpNode> make_by_ip(core::Loop &loop, UdpType type,
-                                             const std::string &ip,
-                                             uint16_t port);
+  /* 方法 */
+  using UdpSocket::post_send_task;
 
-  static std::shared_ptr<UdpNode> make_by_path(core::Loop &loop, UdpType type,
-                                               const std::string &path);
+  using UdpSocket::post_heavy_task;
 
-  /* 接口 */
+  using UdpSocket::start;
 
-  template <typename container>
-  void post_send_task(container data, InetAddr addr);
+  using UdpSocket::stop;
 
-  template <typename Fun> void post_heavy_task(Fun task);
-
-  void set_recv_cb(ReadCallBack cb) noexcept;
+  void set_read_cb(NodeCallBack cb) noexcept;
 
   void set_error_cb(ErrorCallBack cb) noexcept;
 
-  void start();
-
-  void stop();
-
 private:
-  UdpNode(core::Loop &loop, const InetAddr &addr);
+  /* 构造函数 */
+  UdpNode(core::Loop &loop, const InetAddr &local);
 
-  core::LoopChannel udp_channel_;
-  std::vector<uint8_t> recv_buf_{};
+  /* 基类接口 */
+  void on_read(std::vector<uint8_t> data, const InetAddr &source) override;
+
+  void on_error() override;
 
   /* 回调 */
-  ReadCallBack read_cb_{};
+  NodeCallBack read_cb_{};
   ErrorCallBack error_cb_{};
 };
 
-/*-------------------- UDP session  --------------------*/
+/*-------------------- UDP client  --------------------*/
+class UdpClient : public UdpSocket {
+  /* client 接收回调 */
+  using ClientCallBack =
+      std::function<void(const std::shared_ptr<UdpClient> &udp_client,
+                         std::vector<std::uint8_t> data)>;
 
-/*-------------------- 模板实现  --------------------*/
-template <typename container>
-void UdpNode::post_send_task(container data, InetAddr addr) {
-  auto task = [this, data = std::move(data), addr]() {
-    udp_send(udp_channel_, data, addr);
+public:
+  ~UdpClient() override;
+
+  /* 静态工厂 */
+  static std::shared_ptr<UdpClient>
+  make_udp_client(core::Loop &loop, const InetAddr &local, const InetAddr &source);
+
+  /* 方法 */
+  template <typename container> void post_send_task(container data);
+
+  using UdpSocket::post_heavy_task;
+
+  using UdpSocket::start;
+
+  using UdpSocket::stop;
+
+  void set_read_cb(ClientCallBack cb) noexcept;
+
+  void set_error_cb(ErrorCallBack cb) noexcept;
+
+private:
+  /* 构造函数 */
+  UdpClient(core::Loop &loop, const InetAddr &local, const InetAddr &source);
+
+  /* 基类接口 */
+  void on_read(std::vector<uint8_t> data, const InetAddr &source) override;
+
+  void on_error() override;
+
+  /* 回调 */
+  ClientCallBack read_cb_{};
+  ErrorCallBack error_cb_{};
+
+  /* 对端地址 */
+  InetAddr source_;
+};
+
+/*-------------------- UDP server  --------------------*/
+class UdpServer : public UdpSocket {
+public:
+  /* 业务会话 */
+  class UdpSession {
+  public:
+    ~UdpSession() = default;
+
+    /* 静态工厂 */
+    static std::shared_ptr<UdpSession>
+    make_udp_session(const std::shared_ptr<UdpServer> &server, const InetAddr &source);
+
+    /* 接口 */
+    void set_user_context(std::shared_ptr<void> user_context) noexcept;
+
+    [[nodiscard]] std::shared_ptr<void> get_user_context() const noexcept;
+
+    template <typename container> void post_send_task(container data);
+
+    template <typename Fun> void post_heavy_task(Fun fun);
+
+  private:
+    UdpSession(const std::shared_ptr<UdpServer> &server, const InetAddr &source);
+
+    std::shared_ptr<void> user_context_{};
+    InetAddr source_;
+    std::weak_ptr<UdpServer> server_{};
   };
 
-  udp_channel_.post_io_task(weak_from_this(), std::move(task));
+  /* server新建session和接收回调 */
+  using ServerCallBack =
+      std::function<void(const std::shared_ptr<UdpSession> &udp_session,
+                         std::vector<std::uint8_t> data)>;
+
+  ~UdpServer() override;
+
+  /* 静态工厂 */
+  static std::shared_ptr<UdpServer> make_udp_server(core::Loop &loop,
+                                                    const InetAddr &local);
+
+  /* 接口 */
+  using UdpSocket::start;
+
+  using UdpSocket::stop;
+
+  void set_new_session_cb(ServerCallBack cb) noexcept;
+
+  void set_read_cb(ServerCallBack cb) noexcept;
+
+  void set_error_cb(ErrorCallBack cb) noexcept;
+
+private:
+  /* 构造函数 */
+  UdpServer(core::Loop &loop, const InetAddr &local);
+
+  using UdpSocket::post_send_task;
+
+  using UdpSocket::post_heavy_task;
+
+  /* 基类接口 */
+  void on_read(std::vector<uint8_t> data, const InetAddr &source) override;
+
+  void on_error() override;
+
+  /* 回调 */
+  ServerCallBack new_session_cb_{};
+  ServerCallBack read_cb_{};
+  ErrorCallBack error_cb_{};
+
+  /* 会话管理 */
+  std::unordered_map<InetAddr, std::shared_ptr<UdpSession>> sessions_{};
+};
+
+/*-------------------- 模板实现  --------------------*/
+template <typename container> void UdpClient::post_send_task(container data) {
+  UdpSocket::post_send_task(std::move(data), source_);
 }
 
-template <typename Fun> void UdpNode::post_heavy_task(Fun task) {
-  udp_channel_.post_heavy_task(weak_from_this(), std::move(task));
+template <typename container>
+void UdpServer::UdpSession::post_send_task(container data) {
+  auto server = server_.lock();
+  if (server == nullptr) {
+    return;
+  }
+  server->post_send_task(std::move(data), source_);
+}
+
+template <typename Fun> void UdpServer::UdpSession::post_heavy_task(Fun fun) {
+  auto server = server_.lock();
+  if (server == nullptr) {
+    return;
+  }
+  server->post_heavy_task(std::move(fun));
 }
 } // namespace kzevent::net::udp

@@ -53,7 +53,7 @@ constexpr EventMode operator&(EventMode a, EventMode b) noexcept {
                                 static_cast<uint32_t>(b));
 }
 
-using CallBack = std::function<void(EventType)>;
+using CallBack = std::function<void(const EventType)>;
 using LoopTask = std::function<void()>;
 using LifeChecker = std::weak_ptr<void>;
 
@@ -82,7 +82,7 @@ private:
   /* 事件 */
   struct Event {
     bool in_epoll{false};
-    CallBack cb_{[](EventType) {}};
+    CallBack cb_{[](const EventType) {}};
   };
 
   /* loop fd 接口 */

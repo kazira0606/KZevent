@@ -1,7 +1,9 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <sys/stat.h>
@@ -22,6 +24,10 @@ public:
   ~InetAddr() = default;
 
   bool operator==(const InetAddr &other) const noexcept;
+
+  bool operator!=(const InetAddr &other) const noexcept;
+
+  [[nodiscard]] size_t hash() const noexcept;
 
   /* 静态工厂 */
 
@@ -58,7 +64,7 @@ private:
   socklen_t socklen_{};
 };
 
-/*-------------------- 网络工厂  --------------------*/
+/*-------------------- Channel工厂  --------------------*/
 [[nodiscard]] std::optional<core::LoopChannel>
 make_udp_channel(core::Loop &loop, const InetAddr &addr);
 
@@ -119,6 +125,38 @@ std::pair<ssize_t, std::optional<InetAddr>> udp_recv(core::LoopChannel &channel,
                                                      container &buf);
 
 /* tcp */
+/* 暂未实现 */
+
+/*-------------------- 网络基类  --------------------*/
+class UdpSocket : public std::enable_shared_from_this<UdpSocket> {
+public:
+  virtual ~UdpSocket() = default;
+
+protected:
+  UdpSocket(core::Loop &loop, const InetAddr &local);
+
+  /* 方法 */
+  template <typename container>
+  void post_send_task(container data, const InetAddr &source);
+
+  template <typename Fun> void post_heavy_task(Fun task);
+
+  void start();
+
+  void stop() const;
+
+private:
+  /* 接口 */
+  virtual void on_read(std::vector<uint8_t> data, const InetAddr &source) = 0;
+
+  virtual void on_error() = 0;
+
+  /* loop channel */
+  core::LoopChannel udp_channel_;
+
+  /* 接收缓冲区 */
+  std::array<uint8_t, 65536> recv_buf_{};
+};
 
 /*-------------------- 模板实现  --------------------*/
 template <typename container>
@@ -160,4 +198,23 @@ std::pair<ssize_t, std::optional<InetAddr>> udp_recv(core::LoopChannel &channel,
     return std::make_pair(ret, std::nullopt);
   }
 }
+
+template <typename container>
+void UdpSocket::post_send_task(container data, const InetAddr &source) {
+  auto task = [this, data = std::move(data), source]() {
+    udp_send(udp_channel_, data, source);
+  };
+
+  udp_channel_.post_io_task(weak_from_this(), std::move(task));
+}
+
+template <typename Fun> void UdpSocket::post_heavy_task(Fun task) {
+  udp_channel_.post_heavy_task(weak_from_this(), std::move(task));
+}
 } // namespace kzevent::net
+
+template <> struct std::hash<kzevent::net::InetAddr> {
+  size_t operator()(const kzevent::net::InetAddr &addr) const noexcept {
+    return addr.hash();
+  };
+};
