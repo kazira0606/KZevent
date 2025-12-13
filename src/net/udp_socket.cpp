@@ -21,7 +21,9 @@ std::shared_ptr<UdpNode> UdpNode::make_udp_node(core::Loop &loop,
     EnableMakeShared(core::Loop &loop, const InetAddr &local)
         : UdpNode(loop, local) {}
   };
-  return std::make_shared<EnableMakeShared>(loop, local);
+  auto ret = std::make_shared<EnableMakeShared>(loop, local);
+  ret->start();
+  return ret;
 }
 
 void UdpNode::set_read_cb(NodeCallBack cb) noexcept {
@@ -63,7 +65,9 @@ std::shared_ptr<UdpClient> UdpClient::make_udp_client(core::Loop &loop,
                      const InetAddr &source)
         : UdpClient(loop, local, source) {}
   };
-  return std::make_shared<EnableMakeShared>(loop, local, source);
+  auto ret = std::make_shared<EnableMakeShared>(loop, local, source);
+  ret->start();
+  return ret;
 }
 
 UdpClient::UdpClient(core::Loop &loop, const InetAddr &local,
@@ -139,39 +143,55 @@ UdpServer::make_udp_server(core::Loop &loop, const InetAddr &local,
                      uint64_t session_timeout_ms)
         : UdpServer(loop, local, session_timeout_ms) {}
   };
-  return std::make_shared<EnableMakeShared>(loop, local, session_timeout_ms);
+  auto ret =
+      std::make_shared<EnableMakeShared>(loop, local, session_timeout_ms);
+  ret->start();
+  return ret;
 }
 
 void UdpServer::start() {
+  /* 基类启动 */
+  UdpSocket::start();
+
+  bool expected{false};
+  if (!started_.compare_exchange_strong(expected, true)) {
+    /* 已经启动 */
+    return;
+  }
+  started_ = true;
+
   auto task = [this](const core::EventType) {
-    const auto now = std::chrono::steady_clock::now();
-
-    auto it = sessions_.begin();
-    while (it != sessions_.end()) {
-      /* 扫描所有会话距离上一次接收数据的时间间隔 */
-      const auto duration = now - it->second->time_stamp_;
-
-      if (duration > std::chrono::milliseconds(session_timeout_ms_)) {
-        /* 会话超时 */
-        it = sessions_.erase(it);
-      } else {
-        ++it;
-      }
-    }
-
     uint64_t val;
     while (read(timer_channel_.get_fd(), &val, sizeof(val)) > 0)
       ;
     if (errno != EAGAIN) {
       sys_error::fatal();
     }
+
+    const auto now = std::chrono::steady_clock::now();
+    auto it = sessions_.begin();
+    while (it != sessions_.end()) {
+      /* 扫描所有会话距离上一次接收数据的时间间隔 */
+      const auto duration = now - it->second->time_stamp_;
+
+      if (duration > std::chrono::milliseconds{session_timeout_ms_}) {
+        /* 会话超时 */
+        it = sessions_.erase(it);
+      } else {
+        ++it;
+      }
+    }
   };
 
   timer_channel_.update_event(weak_from_this(), core::EventType::kRead,
                               core::EventMode::kDefault, std::move(task));
+}
 
-  /* 基类启动 */
-  UdpSocket::start();
+void UdpServer::stop() {
+  started_ = false;
+  /* 基类停止 */
+  UdpSocket::stop();
+  timer_channel_.disable_event();
 }
 
 void UdpServer::set_new_session_cb(ServerCallBack cb) noexcept {

@@ -65,11 +65,8 @@ TEST_F(KZUdpTest, EchoUdpNodeTestIpv4) {
         udp_node->post_heavy_task(std::move(heavy_task));
       });
 
-  /* 启动服务节点 */
-  echo_node->start();
-
   /* 统计收到的包数量 */
-  std::atomic<int> success_count{0};
+  std::atomic<int32_t> success_count{0};
 
   /* 创建KZEVENT_CLIENT_NUM个客户端 */
   std::vector<std::thread> client_threads{};
@@ -105,9 +102,6 @@ TEST_F(KZUdpTest, EchoUdpNodeTestIpv4) {
         done->set_value();
       });
 
-      /* 启动客户端 */
-      client->start();
-
       /* 客户端发送数据 */
       client->post_send_task(enco_data);
 
@@ -130,8 +124,8 @@ TEST_F(KZUdpTest, EchoUdpNodeTestIpv4) {
   EXPECT_EQ(success_count.load(), KZEVENT_CLIENT_NUM);
 }
 
-/*-------------------- UdpNode + UdpClient stop测试 --------------------*/
-TEST_F(KZUdpTest, UdpNodeStopTest) {
+/*-------------------- UdpNode stop + restart 测试 --------------------*/
+TEST_F(KZUdpTest, UdpNodeStopThenStartTest) {
   using namespace net::udp;
   constexpr uint16_t server_port{8888};
 
@@ -144,23 +138,44 @@ TEST_F(KZUdpTest, UdpNodeStopTest) {
   const auto enco_node = UdpNode::make_udp_node(*loop_, enco_node_addr.value());
   ASSERT_TRUE(enco_node);
 
-  std::atomic<int> recv_count{0};
+  std::atomic<int32_t> recv_count{0};
 
-  /* 回调保证 */
+  /* 三阶段回调保证 */
   auto first_packet_done = std::make_shared<std::promise<void>>();
-  auto future = first_packet_done->get_future();
+  auto second_stage_done = std::make_shared<std::promise<void>>();
+  auto third_stage_done = std::make_shared<std::promise<void>>();
 
-  enco_node->set_read_cb([&recv_count, first_packet_done](
-                             const auto &udp_node, auto data, auto source) {
-    recv_count.fetch_add(1);
+  auto first_future = first_packet_done->get_future();
+  auto second_future = second_stage_done->get_future();
+  auto third_future = third_stage_done->get_future();
 
-    /* 只有第一次收到包时，才通知测试主线程 */
-    if (recv_count.load() == 1) {
+  std::atomic<bool> first_set{false};
+  std::atomic<bool> second_set{false};
+  std::atomic<bool> third_set{false};
+
+  /* 1(启动前正常包) + 2(stop期间积压包) */
+  constexpr int32_t kExpectAfterRestartDrain = 3;
+  /* 再额外发一包验证恢复后持续可用 */
+  constexpr int32_t kExpectAfterRestartSend = 4;
+
+  enco_node->set_read_cb([&](const auto &udp_node, auto data, auto source) {
+    const int32_t c = recv_count.fetch_add(1) + 1;
+
+    /* 第一阶段：收到第一个包 */
+    if (c == 1 && !first_set.exchange(true)) {
       first_packet_done->set_value();
     }
-  });
 
-  enco_node->start();
+    /* 第二阶段：restart 后应把 stop 期间积压的两个包也读出来 */
+    if (c == kExpectAfterRestartDrain && !second_set.exchange(true)) {
+      second_stage_done->set_value();
+    }
+
+    /* 第三阶段：restart 后再发一包，也能正常收到 */
+    if (c == kExpectAfterRestartSend && !third_set.exchange(true)) {
+      third_stage_done->set_value();
+    }
+  });
 
   /* 创建 Client */
   const auto client_addr = net::InetAddr::make_ipv4("0.0.0.0", 0);
@@ -173,28 +188,38 @@ TEST_F(KZUdpTest, UdpNodeStopTest) {
                                                  server_addr.value());
   ASSERT_TRUE(client);
 
-  client->start();
-
   /* 第一阶段：正常发送一个包 */
   client->post_send_task(data);
 
-  /* 等待 Server 收到第一个包的回应 */
-  ASSERT_EQ(future.wait_for(std::chrono::seconds(1)),
+  /* 等待 Server 收到第一个包 */
+  ASSERT_EQ(first_future.wait_for(std::chrono::seconds(1)),
             std::future_status::ready);
   EXPECT_EQ(recv_count.load(), 1);
 
-  /* 第二阶段：调用 Stop */
+  /* 第二阶段：调用 Stop，stop 期间发送两个包，回调不应触发 */
   enco_node->stop();
 
-  /* 再次发送 */
   client->post_send_task(data);
   client->post_send_task(data);
 
-  /* 等待并验证 */
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  /* stop生效，只收到了stop之前的包 */
+  /* stop生效：仍然只收到 stop 之前的包 */
   EXPECT_EQ(recv_count.load(), 1);
+
+  /* 第三阶段：再次 Start，应立即收到 stop 期间积压的两个包 */
+  enco_node->start();
+
+  ASSERT_EQ(second_future.wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+  EXPECT_EQ(recv_count.load(), kExpectAfterRestartDrain);
+
+  /* 再验证一次：restart 后继续发送，也能正常收到 */
+  client->post_send_task(data);
+
+  ASSERT_EQ(third_future.wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+  EXPECT_EQ(recv_count.load(), kExpectAfterRestartSend);
 }
 
 /*-------------------- UdpServer和UdpClient ipv6测试 --------------------*/
@@ -249,11 +274,8 @@ TEST_F(KZUdpTest, EchoUdpServerTestIpv6_ContextFeature) {
     }
   });
 
-  /* 启动服务节点 */
-  echo_server->start();
-
   /* 统计完全完成交互的客户端数量 */
-  std::atomic<int> success_count{0};
+  std::atomic<int32_t> success_count{0};
 
   /* 创建KZEVENT_CLIENT_NUM个客户端 */
   std::vector<std::thread> client_threads{};
@@ -313,9 +335,6 @@ TEST_F(KZUdpTest, EchoUdpServerTestIpv6_ContextFeature) {
             }
           });
 
-      /* 启动客户端 */
-      client->start();
-
       /* 触发阶段一：发送独一无二的数据 */
       client->post_send_task(unique_data);
 
@@ -372,8 +391,6 @@ TEST_F(KZUdpTest, UdpServerSessionTimeoutTest) {
     session->post_send_task(resp_exist);
   });
 
-  server->start();
-
   /* 创建 Client */
   const auto client_addr = net::InetAddr::make_ipv4("0.0.0.0", 0);
   ASSERT_TRUE(client_addr.has_value());
@@ -391,12 +408,12 @@ TEST_F(KZUdpTest, UdpServerSessionTimeoutTest) {
   auto promise_step_3 = std::make_shared<std::promise<void>>();
 
   /* 状态机：0=初始, 1=已收到第一次, 2=已收到第二次, 3=超时测试 */
-  std::atomic<int> stage{0};
+  std::atomic<int32_t> stage{0};
 
   /* 设置 Client 回调 */
   client->set_read_cb([&, promise_step_1, promise_step_2,
                        promise_step_3](const auto &udp_client, auto data) {
-    int current_stage = stage.load();
+    int32_t current_stage = stage.load();
 
     if (current_stage == 0) {
       /* 预期：First In */
@@ -414,8 +431,6 @@ TEST_F(KZUdpTest, UdpServerSessionTimeoutTest) {
       promise_step_3->set_value();
     }
   });
-
-  client->start();
 
   /* 阶段一：建立新连接 */
   client->post_send_task(msg_ping);

@@ -416,7 +416,7 @@ std::optional<core::LoopChannel> make_timer_channel(core::Loop &loop,
   const auto sec = timeout_ms / 1000;
   const auto nsec = (timeout_ms % 1000) * 1000000;
 
-  struct itimerspec ts = {};
+  struct itimerspec ts {};
   /* 首次延迟 */
   ts.it_value.tv_sec = static_cast<time_t>(sec);
   ts.it_value.tv_nsec = static_cast<long>(nsec);
@@ -445,6 +445,13 @@ UdpSocket::UdpSocket(core::Loop &loop, const InetAddr &local)
       }()) {}
 
 void UdpSocket::start() {
+  bool expected{false};
+  if (!started_.compare_exchange_strong(expected, true)) {
+    /* 已经启动 */
+    return;
+  }
+  started_ = true;
+
   auto cb = [this](const core::EventType event_types) {
     if ((event_types & core::EventType::kRead) == core::EventType::kRead) {
       /* 可读事件,循环读取缓冲区所有的包 */
@@ -474,5 +481,8 @@ void UdpSocket::start() {
                             core::EventMode::kDefault, std::move(cb));
 }
 
-void UdpSocket::stop() const { udp_channel_.disable_event(); }
+void UdpSocket::stop() {
+  started_ = false;
+  udp_channel_.disable_event();
+}
 } // namespace kzevent::net

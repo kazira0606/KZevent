@@ -3,6 +3,7 @@ set(KZEVENT_SOURCES
         log.cpp
         net/inet.cpp
         net/udp_socket.cpp
+        timer/timer.cpp
 )
 
 add_library(kzevent ${KZEVENT_SOURCES})

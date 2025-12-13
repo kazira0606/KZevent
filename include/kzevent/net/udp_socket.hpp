@@ -29,13 +29,13 @@ public:
                                                 const InetAddr &local);
 
   /* 方法 */
-  using UdpSocket::post_send_task;
-
-  using UdpSocket::post_heavy_task;
-
   using UdpSocket::start;
 
   using UdpSocket::stop;
+
+  using UdpSocket::post_send_task;
+
+  using UdpSocket::post_heavy_task;
 
   void set_read_cb(NodeCallBack cb) noexcept;
 
@@ -71,13 +71,13 @@ public:
                                                     const InetAddr &source);
 
   /* 方法 */
-  template <typename container> void post_send_task(container data);
-
-  using UdpSocket::post_heavy_task;
-
   using UdpSocket::start;
 
   using UdpSocket::stop;
+
+  template <typename container> void post_send_task(container data);
+
+  using UdpSocket::post_heavy_task;
 
   void set_read_cb(ClientCallBack cb) noexcept;
 
@@ -155,7 +155,7 @@ public:
   /* 接口 */
   void start();
 
-  using UdpSocket::stop;
+  void stop();
 
   void set_new_session_cb(ServerCallBack cb) noexcept;
 
@@ -184,10 +184,13 @@ private:
 
   /* 会话管理 */
   std::unordered_map<InetAddr, std::shared_ptr<UdpSession>> sessions_{};
-  
+
   /* 默认超时时长1min */
   core::LoopChannel timer_channel_;
   uint64_t session_timeout_ms_{60000};
+
+  /* 启动标志 */
+  std::atomic<bool> started_{false};
 };
 
 /*-------------------- 模板实现  --------------------*/

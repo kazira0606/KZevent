@@ -2,6 +2,7 @@ add_executable(kz_unit_tests
         core_test.cpp
         log_test.cpp
         net_tests/udp_socket_test.cpp
+        timer_tests/timer_test.cpp
 )
 
 target_link_libraries(kz_unit_tests
@@ -19,6 +20,8 @@ target_compile_definitions(kz_unit_tests PRIVATE
         KZEVENT_LOG_DIR="${CMAKE_BINARY_DIR}"
         # udp_socket_test配置宏
         KZEVENT_CLIENT_NUM=100
+        # timer_test配置宏
+        KZEVENT_TIMER_CLIENT_NUM=99
 )
 
 include(GoogleTest)

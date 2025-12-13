@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -146,7 +147,7 @@ protected:
 
   void start();
 
-  void stop() const;
+  void stop();
 
 private:
   /* 接口 */
@@ -158,6 +159,9 @@ private:
 
   /* 接收缓冲区 */
   std::array<uint8_t, 65536> recv_buf_{};
+
+  /* 启动标志 */
+  std::atomic<bool> started_{false};
 };
 
 /*-------------------- 模板实现  --------------------*/

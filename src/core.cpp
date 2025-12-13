@@ -110,12 +110,12 @@ Loop::~Loop() {
   /* 清理由于executor线程投递stop导致的残留joint */
   if (io_thread_.joinable()) {
     io_thread_.join();
-    exe_state_.store(ExeState::Stopped);
+    exe_state_ = ExeState::Stopped;
   }
 
   if (heavy_thread_.joinable()) {
     heavy_thread_.join();
-    exe_state_.store(ExeState::Stopped);
+    exe_state_ = ExeState::Stopped;
   }
 
   if (const auto ret = close(epoll_fd_); ret < 0) {
@@ -143,7 +143,7 @@ bool Loop::start() {
       return false;
     }
     io_thread_.join();
-    exe_state_.store(ExeState::Stopped);
+    exe_state_ = ExeState::Stopped;
   }
 
   if (heavy_thread_.joinable()) {
@@ -152,7 +152,7 @@ bool Loop::start() {
       return false;
     }
     heavy_thread_.join();
-    exe_state_.store(ExeState::Stopped);
+    exe_state_ = ExeState::Stopped;
   }
 
   /* 同时启动io_thread和heavy_thread */
@@ -196,7 +196,7 @@ void Loop::stop() {
     heavy_thread_.join();
   }
 
-  exe_state_.store(ExeState::Stopped);
+  exe_state_ = ExeState::Stopped;
 }
 
 void Loop::register_fd(int32_t fd) {
@@ -318,7 +318,7 @@ void Loop::wake_heavy_up() { heavy_wake_cv_.notify_one(); }
 void Loop::io_executor() {
   std::array<epoll_event, kEpollMaxWaitLen> evs{};
 
-  while (exe_state_.load() == ExeState::Running) {
+  while (exe_state_ == ExeState::Running) {
     const auto ev_count =
         epoll_wait(epoll_fd_, evs.data(), kEpollMaxWaitLen, -1);
     if (ev_count < 0) {
@@ -363,12 +363,11 @@ void Loop::io_executor() {
 }
 
 void Loop::heavy_executor() {
-  while (exe_state_.load() == ExeState::Running) {
+  while (exe_state_ == ExeState::Running) {
     std::unique_lock wait_lock{heavy_queue_mtx_};
     {
       heavy_wake_cv_.wait(wait_lock, [this] {
-        return !heavy_buffer_queue_.empty() ||
-               exe_state_.load() != ExeState::Running;
+        return !heavy_buffer_queue_.empty() || exe_state_ != ExeState::Running;
       });
       std::swap(heavy_exe_queue_, heavy_buffer_queue_);
     }
