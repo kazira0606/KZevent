@@ -28,7 +28,7 @@ constexpr EventToLocal<EventType> kEventTypeToEpoll[] = {
     {EventType::kRead, static_cast<uint32_t>(EPOLLIN)},
     {EventType::kWrite, static_cast<uint32_t>(EPOLLOUT)},
     {EventType::kError, static_cast<uint32_t>(EPOLLERR)},
-    {EventType::kHangUp, static_cast<uint32_t>(EPOLLHUP)}};
+    {EventType::kShutdown, static_cast<uint32_t>(EPOLLRDHUP)}};
 
 constexpr EventToLocal<EventMode> kEventModeToEpoll[] = {
     {EventMode::kOneShot, static_cast<uint32_t>(EPOLLONESHOT)}};
@@ -269,6 +269,43 @@ void Loop::enable_fd(const int32_t fd, const EventType types,
   post_io_task(std::move(task));
 }
 
+void Loop::enable_fd(const int32_t fd, const EventType types,
+                     const EventMode modes) {
+  auto task = [this, fd, types, modes] {
+    if (const auto it = events_.find(fd); it == events_.end()) {
+      KZ_LOG_INFO("fd has not registered!");
+    } else {
+      int32_t epoll_op{};
+      it->second.in_epoll ? epoll_op = EPOLL_CTL_MOD : epoll_op = EPOLL_CTL_ADD;
+
+      epoll_event ev{};
+      ev.events = kz_to_local(types) | kz_to_local(modes);
+      ev.data.fd = fd;
+
+      if (epoll_ctl(epoll_fd_, epoll_op, fd, &ev) < 0) {
+        if (epoll_op == EPOLL_CTL_ADD && errno == EEXIST) {
+          if (epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev) < 0) {
+            sys_error::error();
+            return;
+          }
+        } else if (epoll_op == EPOLL_CTL_MOD && errno == ENOENT) {
+          if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev) < 0) {
+            sys_error::error();
+            return;
+          }
+        } else {
+          sys_error::error();
+          return;
+        }
+      }
+
+      it->second.in_epoll = true;
+    }
+  };
+
+  post_io_task(std::move(task));
+}
+
 void Loop::disable_fd(int32_t fd) {
   auto task = [this, fd] {
     if (const auto it = events_.find(fd); it == events_.end()) {
@@ -408,6 +445,23 @@ LoopChannel &LoopChannel::operator=(LoopChannel &&other) noexcept {
 void swap(LoopChannel &a, LoopChannel &b) noexcept {
   std::swap(a.fd_, b.fd_);
   std::swap(a.in_loop_, b.in_loop_);
+}
+
+void LoopChannel::update_event(EventType types, EventMode modes) {
+  if (fd_ == -1 || in_loop_ == nullptr) {
+    /* 无效的channel不允许访问 */
+    KZ_LOG_ERROR("invalid channel be accessed!");
+    return;
+  }
+
+  in_loop_->enable_fd(fd_, types, modes);
+  event_types_ = types;
+  event_modes_ = modes;
+}
+
+[[nodiscard]] std::pair<EventType, EventMode>
+LoopChannel::get_event_info() const {
+  return {event_types_, event_modes_};
 }
 
 void LoopChannel::disable_event() const {

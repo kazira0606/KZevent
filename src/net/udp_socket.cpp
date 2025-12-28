@@ -1,6 +1,7 @@
 #include <cassert>
 #include <cstdint>
 #include <memory>
+#include <system_error>
 
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -17,10 +18,18 @@ UdpNode::~UdpNode() { stop(); }
 
 std::shared_ptr<UdpNode> UdpNode::make_udp_node(core::Loop &loop,
                                                 const InetAddr &local) {
+  if (local.get_sockaddr()->sa_family != AF_INET &&
+      local.get_sockaddr()->sa_family != AF_INET6) {
+    /* udp socket 只支持 ipv4 和 ipv6 */
+    KZ_LOG_ERROR("udp node err: unsupported protocol");
+    return {};
+  }
+
   struct EnableMakeShared : public UdpNode {
     EnableMakeShared(core::Loop &loop, const InetAddr &local)
         : UdpNode(loop, local) {}
   };
+
   auto ret = std::make_shared<EnableMakeShared>(loop, local);
   ret->start();
   return ret;
@@ -30,28 +39,26 @@ void UdpNode::set_read_cb(NodeCallBack cb) noexcept {
   read_cb_ = std::move(cb);
 }
 
-void UdpNode::set_error_cb(ErrorCallBack cb) noexcept {
-  error_cb_ = std::move(cb);
-}
-
 UdpNode::UdpNode(core::Loop &loop, const InetAddr &local)
-    : UdpSocket(loop, local) {}
+    : DgramSocket(loop, local) {}
 
 void UdpNode::on_read(std::vector<uint8_t> data, const InetAddr &source) {
   if (read_cb_ == nullptr) {
     /* 还未注册回调 */
     return;
   }
-  read_cb_(std::static_pointer_cast<UdpNode>(shared_from_this()),
-           std::move(data), source);
+
+  /* 强制数据处理在heavy线程 */
+  auto task = [this, data = std::move(data), source]() mutable {
+    read_cb_(std::static_pointer_cast<UdpNode>(shared_from_this()),
+             std::move(data), source);
+  };
+
+  post_heavy_task(std::move(task));
 }
 
-void UdpNode::on_error() {
-  if (error_cb_ == nullptr) {
-    /* 还未注册回调 */
-    return;
-  }
-  error_cb_();
+void UdpNode::on_error(int32_t err) {
+  KZ_LOG_ERROR("udp node err: ", std::system_category().message(err));
 }
 
 /*-------------------- UDP client  --------------------*/
@@ -60,6 +67,19 @@ UdpClient::~UdpClient() { stop(); }
 std::shared_ptr<UdpClient> UdpClient::make_udp_client(core::Loop &loop,
                                                       const InetAddr &local,
                                                       const InetAddr &source) {
+  if (local.get_sockaddr()->sa_family != AF_INET &&
+      local.get_sockaddr()->sa_family != AF_INET6) {
+    /* udp socket 只支持 ipv4 和 ipv6 */
+    KZ_LOG_ERROR("udp client err: unsupported protocol");
+    return {};
+  }
+
+  if (local.get_sockaddr()->sa_family != source.get_sockaddr()->sa_family) {
+    /* 源地址和目标地址的协议不一致 */
+    KZ_LOG_ERROR("udp client err: source and target protocol mismatch");
+    return {};
+  }
+
   struct EnableMakeShared : public UdpClient {
     EnableMakeShared(core::Loop &loop, const InetAddr &local,
                      const InetAddr &source)
@@ -72,7 +92,7 @@ std::shared_ptr<UdpClient> UdpClient::make_udp_client(core::Loop &loop,
 
 UdpClient::UdpClient(core::Loop &loop, const InetAddr &local,
                      const InetAddr &source)
-    : UdpSocket(loop, local), source_(source) {}
+    : DgramSocket(loop, local), source_(source) {}
 
 void UdpClient::set_read_cb(ClientCallBack cb) noexcept {
   read_cb_ = std::move(cb);
@@ -89,26 +109,44 @@ void UdpClient::on_read(std::vector<uint8_t> data, const InetAddr &source) {
   }
 
   if (source != source_) {
-    KZ_LOG_INFO("UDP client read data from unexpected source");
+    KZ_LOG_INFO("udp client read data from unexpected source");
     return;
   }
 
-  read_cb_(std::static_pointer_cast<UdpClient>(shared_from_this()),
-           std::move(data));
+  /* 强制数据处理在heavy线程 */
+  auto task = [this, data = std::move(data)]() mutable {
+    read_cb_(std::static_pointer_cast<UdpClient>(shared_from_this()),
+             std::move(data));
+  };
+
+  post_heavy_task(std::move(task));
 }
 
-void UdpClient::on_error() {
+void UdpClient::on_error(int32_t err) {
+  KZ_LOG_ERROR("udp client err: ", std::system_category().message(err));
+
   if (error_cb_ == nullptr) {
     /* 还未注册回调 */
     return;
   }
-  error_cb_();
+
+  if (err == ECONNREFUSED) {
+    /* 无效的发送地址 */
+    error_cb_();
+  }
 }
 
 /*-------------------- UDP session  --------------------*/
 std::shared_ptr<UdpServer::UdpSession> UdpServer::UdpSession::make_udp_session(
     const std::shared_ptr<UdpServer> &server, const InetAddr &source,
     std::chrono::steady_clock::time_point time_stamp) {
+
+  if (server->local_.get_sockaddr()->sa_family !=
+      source.get_sockaddr()->sa_family) {
+    /* 源地址和目标地址的协议不一致 */
+    KZ_LOG_ERROR("udp session err: source and target protocol mismatch");
+  }
+
   struct EnableMakeShared : public UdpServer::UdpSession {
     EnableMakeShared(const std::shared_ptr<UdpServer> &server,
                      const InetAddr &source,
@@ -138,6 +176,12 @@ UdpServer::~UdpServer() { stop(); }
 std::shared_ptr<UdpServer>
 UdpServer::make_udp_server(core::Loop &loop, const InetAddr &local,
                            uint64_t session_timeout_ms) {
+  if (local.get_sockaddr()->sa_family != AF_INET &&
+      local.get_sockaddr()->sa_family != AF_INET6) {
+    /* udp socket 只支持 ipv4 和 ipv6 */
+    KZ_LOG_ERROR("udp server err: unsupported protocol");
+  }
+
   struct EnableMakeShared : public UdpServer {
     EnableMakeShared(core::Loop &loop, const InetAddr &local,
                      uint64_t session_timeout_ms)
@@ -151,7 +195,7 @@ UdpServer::make_udp_server(core::Loop &loop, const InetAddr &local,
 
 void UdpServer::start() {
   /* 基类启动 */
-  UdpSocket::start();
+  DgramSocket::start();
 
   bool expected{false};
   if (!started_.compare_exchange_strong(expected, true)) {
@@ -190,7 +234,7 @@ void UdpServer::start() {
 void UdpServer::stop() {
   started_ = false;
   /* 基类停止 */
-  UdpSocket::stop();
+  DgramSocket::stop();
   timer_channel_.disable_event();
 }
 
@@ -202,13 +246,9 @@ void UdpServer::set_read_cb(ServerCallBack cb) noexcept {
   read_cb_ = std::move(cb);
 }
 
-void UdpServer::set_error_cb(ErrorCallBack cb) noexcept {
-  error_cb_ = std::move(cb);
-}
-
 UdpServer::UdpServer(core::Loop &loop, const InetAddr &local,
                      uint64_t session_timeout_ms)
-    : UdpSocket(loop, local),
+    : DgramSocket(loop, local), local_(local),
       timer_channel_([&loop, session_timeout_ms]() -> core::LoopChannel {
         /* 默认策略，10倍频率扫描->误差10% */
         auto scan_time = session_timeout_ms / 10;
@@ -221,7 +261,7 @@ UdpServer::UdpServer(core::Loop &loop, const InetAddr &local,
           scan_time = 10000;
         }
 
-        auto ch = make_timer_channel(loop, scan_time);
+        auto ch = make_timer_channel(loop, scan_time, scan_time);
 
         if (!ch.has_value()) {
           throw std::runtime_error("make timer channel failed");
@@ -250,12 +290,22 @@ void UdpServer::on_read(std::vector<uint8_t> data, const InetAddr &source) {
     sessions_.emplace(source, new_session);
 
     if (new_session_cb_ != nullptr) {
-      /* 执行新连接回调 */
-      new_session_cb_(new_session, std::move(data));
+      /* 处理新连接回调 */
+      /* 强制数据处理在heavy线程 */
+      auto task = [this, new_session, data = std::move(data)]() mutable {
+        new_session_cb_(new_session, std::move(data));
+      };
+
+      post_heavy_task(std::move(task));
 
     } else {
-      /* 未注册新连接回调则默认执行数据回调 */
-      read_cb_(new_session, std::move(data));
+
+      /* 强制数据处理在heavy线程 */
+      auto task = [this, new_session, data = std::move(data)]() mutable {
+        read_cb_(new_session, std::move(data));
+      };
+
+      post_heavy_task(std::move(task));
     }
     return;
   }
@@ -265,14 +315,15 @@ void UdpServer::on_read(std::vector<uint8_t> data, const InetAddr &source) {
     return;
   }
   it->second->time_stamp_ = std::chrono::steady_clock::now();
-  read_cb_(it->second, std::move(data));
+
+  auto task = [this, session = it->second, data = std::move(data)]() mutable {
+    read_cb_(session, std::move(data));
+  };
+
+  post_heavy_task(std::move(task));
 }
 
-void UdpServer::on_error() {
-  if (error_cb_ == nullptr) {
-    /* 还未注册回调 */
-    return;
-  }
-  error_cb_();
+void UdpServer::on_error(int32_t err) {
+  KZ_LOG_ERROR("udp server err: ", std::system_category().message(err));
 }
 } // namespace kzevent::net::udp

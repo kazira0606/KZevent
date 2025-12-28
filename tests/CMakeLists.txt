@@ -1,6 +1,7 @@
 add_executable(kz_unit_tests
         core_test.cpp
         log_test.cpp
+        net_tests/tcp_socket_test.cpp
         net_tests/udp_socket_test.cpp
         timer_tests/timer_test.cpp
 )

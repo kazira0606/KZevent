@@ -1,14 +1,16 @@
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
+#include <vector>
 
 #include <arpa/inet.h>
-#include <cstring>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <sys/types.h>
 #include <sys/un.h>
-#include <vector>
+#include <unistd.h>
 
 #include "kzevent/core.hpp"
 #include "kzevent/log.hpp"
@@ -16,6 +18,28 @@
 #include "kzevent/sys_error.hpp"
 
 namespace kzevent::net {
+namespace {
+bool reset_timer_fd(int fd, uint64_t timeout_ms, uint64_t repeat_ms = 0) {
+  struct itimerspec ts {};
+
+  if (timeout_ms > 0) {
+    const auto sec = timeout_ms / 1000;
+    const auto nsec = (timeout_ms % 1000) * 1000000;
+    ts.it_value.tv_sec = static_cast<time_t>(sec);
+    ts.it_value.tv_nsec = static_cast<long>(nsec);
+  }
+
+  if (repeat_ms > 0) {
+    const auto repeat_sec = repeat_ms / 1000;
+    const auto repeat_nsec = (repeat_ms % 1000) * 1000000;
+    ts.it_interval.tv_sec = static_cast<time_t>(repeat_sec);
+    ts.it_interval.tv_nsec = static_cast<long>(repeat_nsec);
+  }
+
+  return ::timerfd_settime(fd, 0, &ts, nullptr) != -1;
+}
+} // namespace
+
 /*-------------------- 网络地址  --------------------*/
 bool InetAddr::operator==(const InetAddr &other) const noexcept {
   if (addr_storage_.ss_family != other.addr_storage_.ss_family) {
@@ -370,8 +394,8 @@ InetAddr::InetAddr(const sockaddr_storage &addr_storage,
   socklen_ = socklen;
 }
 /*-------------------- Channel工厂  --------------------*/
-std::optional<core::LoopChannel> make_udp_channel(core::Loop &loop,
-                                                  const InetAddr &addr) {
+std::optional<core::LoopChannel> make_dgram_channel(core::Loop &loop,
+                                                    const InetAddr &addr) {
   const auto fd = socket(addr.get_sockaddr()->sa_family,
                          SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
   if (fd == -1) {
@@ -379,9 +403,9 @@ std::optional<core::LoopChannel> make_udp_channel(core::Loop &loop,
     return std::nullopt;
   }
   /* 立即移交fd便于RAII */
-  core::LoopChannel udp_channel(loop, fd);
+  core::LoopChannel dgram_channel(loop, fd);
 
-  /* ipv6 socket禁用ipv4监听 */
+  /* ipv6 dgram socket禁用ipv4监听 */
   if (addr.get_sockaddr()->sa_family == AF_INET6) {
     constexpr int32_t on{1};
     if (const auto ret =
@@ -398,11 +422,78 @@ std::optional<core::LoopChannel> make_udp_channel(core::Loop &loop,
     return std::nullopt;
   }
 
-  return udp_channel;
+  return dgram_channel;
 }
 
-std::optional<core::LoopChannel> make_timer_channel(core::Loop &loop,
-                                                    uint64_t timeout_ms) {
+std::optional<core::LoopChannel>
+make_stream_server_channel(core::Loop &loop, const InetAddr &addr) {
+  const auto fd = socket(addr.get_sockaddr()->sa_family,
+                         SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+  if (fd == -1) {
+    sys_error::error();
+    return std::nullopt;
+  }
+  /* 立即移交fd便于RAII */
+  core::LoopChannel stream_channel(loop, fd);
+
+  /* 可重用 */
+  int32_t opt = 1;
+  if (const auto ret =
+          setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+      ret == -1) {
+    sys_error::error();
+    return std::nullopt;
+  }
+
+  /* ipv6 stream socket禁用ipv4监听 */
+  if (addr.get_sockaddr()->sa_family == AF_INET6) {
+    constexpr int32_t on{1};
+    if (const auto ret =
+            setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof(on));
+        ret == -1) {
+      sys_error::error();
+      return std::nullopt;
+    }
+  }
+
+  /* 服务端显式bind */
+  if (const auto ret = bind(fd, addr.get_sockaddr(), addr.get_socklen());
+      ret == -1) {
+    sys_error::error();
+    return std::nullopt;
+  }
+
+  return stream_channel;
+}
+
+std::optional<core::LoopChannel>
+make_stream_client_channel(core::Loop &loop, const InetAddr &addr) {
+  const auto fd = socket(addr.get_sockaddr()->sa_family,
+                         SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+
+  if (fd == -1) {
+    sys_error::error();
+    return std::nullopt;
+  }
+  /* 立即移交fd便于RAII */
+  core::LoopChannel stream_channel(loop, fd);
+
+  /* ipv6 stream socket禁用ipv4监听 */
+  if (addr.get_sockaddr()->sa_family == AF_INET6) {
+    constexpr int32_t on{1};
+    if (const auto ret =
+            setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof(on));
+        ret == -1) {
+      sys_error::error();
+      return std::nullopt;
+    }
+  }
+
+  return stream_channel;
+}
+
+std::optional<core::LoopChannel>
+make_timer_channel(core::Loop &loop, uint64_t timeout_ms, uint64_t repeat_ms) {
   const auto fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 
   if (fd == -1) {
@@ -413,6 +504,11 @@ std::optional<core::LoopChannel> make_timer_channel(core::Loop &loop,
   /* 立即移交fd便于RAII */
   core::LoopChannel timer_channel(loop, fd);
 
+  if (timeout_ms == 0) {
+    /* 只注册不计时 */
+    return timer_channel;
+  }
+
   const auto sec = timeout_ms / 1000;
   const auto nsec = (timeout_ms % 1000) * 1000000;
 
@@ -421,9 +517,14 @@ std::optional<core::LoopChannel> make_timer_channel(core::Loop &loop,
   ts.it_value.tv_sec = static_cast<time_t>(sec);
   ts.it_value.tv_nsec = static_cast<long>(nsec);
 
-  /* 后续延迟 */
-  ts.it_interval.tv_sec = static_cast<time_t>(sec);
-  ts.it_interval.tv_nsec = static_cast<long>(nsec);
+  if (repeat_ms != 0) {
+    /* 后续延迟 */
+    const auto repeat_sec = repeat_ms / 1000;
+    const auto repeat_nsec = (repeat_ms % 1000) * 1000000;
+
+    ts.it_interval.tv_sec = static_cast<time_t>(repeat_sec);
+    ts.it_interval.tv_nsec = static_cast<long>(repeat_nsec);
+  }
 
   if (const auto ret = timerfd_settime(fd, 0, &ts, nullptr); ret == -1) {
     sys_error::error();
@@ -432,10 +533,105 @@ std::optional<core::LoopChannel> make_timer_channel(core::Loop &loop,
 
   return timer_channel;
 }
+
+/*-------------------- 网络接口  --------------------*/
+std::pair<ssize_t, std::optional<InetAddr>>
+dgram_recv(core::LoopChannel &channel, std::array<uint8_t, UINT16_MAX> &buf) {
+  sockaddr_storage source_addr{};
+  socklen_t source_len{sizeof(source_addr)};
+
+  const auto ret =
+      recvfrom(channel.get_fd(), buf.data(), buf.size(), 0,
+               reinterpret_cast<sockaddr *>(&source_addr), &source_len);
+  if (ret < 0) {
+    if (errno != EAGAIN) {
+      /* 系统错误 */
+      sys_error::error();
+    }
+    return {ret, std::nullopt};
+  }
+
+  return {ret,
+          InetAddr::make_from_sockaddr(
+              reinterpret_cast<const sockaddr *>(&source_addr), source_len)};
+}
+
+IoStatus stream_send(core::LoopChannel &channel, core::StreamBuffer &buf) {
+  const auto ret =
+      send(channel.get_fd(), buf.begin(), buf.size(), MSG_NOSIGNAL);
+
+  if (ret < 0) {
+    if (errno == EAGAIN) {
+      /* 缓冲区满 */
+      return IoStatus::kTryAgain;
+    }
+
+    if (errno == EPIPE) {
+      /* 对端关闭 */
+      return IoStatus::kDisconnected;
+    }
+
+    /* 系统错误 */
+    sys_error::error();
+    return IoStatus::kError;
+  }
+
+  /* 发送成功 */
+  buf.pop(ret);
+  return IoStatus::kSuccess;
+}
+
+IoStatus stream_recv(core::LoopChannel &channel, core::StreamBuffer &buf) {
+  /* 栈缓冲区 */
+  std::array<uint8_t, UINT16_MAX> ex_buf{};
+
+  /* 记录 buf 空余空间 */
+  const auto buf_space = buf.space();
+
+  /* StreamBuffer + array 聚合缓冲 */
+  std::array<iovec, 2> iobuf{{{buf.end(), static_cast<size_t>(buf_space)},
+                              {ex_buf.data(), ex_buf.size()}}};
+
+  const auto ret =
+      readv(channel.get_fd(), iobuf.data(), static_cast<int32_t>(iobuf.size()));
+
+  if (ret < 0) {
+    if (errno == EAGAIN) {
+      /* 缓冲区没有数据 */
+      return IoStatus::kTryAgain;
+    }
+
+    if (errno == ECONNRESET) {
+      /* 对端关闭 */
+      return IoStatus::kDisconnected;
+    }
+
+    /* 系统错误 */
+    sys_error::error();
+    return IoStatus::kError;
+  }
+
+  if (ret == 0) {
+    /* 对端关闭 */
+    return IoStatus::kDisconnected;
+  }
+
+  if (ret > buf_space) {
+    /* 写满了缓冲区 */
+    buf.push(buf_space);
+    /* 利用到了 ex_buf，复制进 buf */
+    buf.insert(ex_buf.begin(), ex_buf.begin() + ret - buf_space);
+  } else {
+    /* 直接写入了 buf */
+    buf.push(ret);
+  }
+  return IoStatus::kSuccess;
+}
+
 /*-------------------- 网络基类  --------------------*/
-UdpSocket::UdpSocket(core::Loop &loop, const InetAddr &local)
-    : udp_channel_([&]() -> core::LoopChannel {
-        auto ch = make_udp_channel(loop, local);
+DgramSocket::DgramSocket(core::Loop &loop, const InetAddr &local)
+    : dgram_channel_([&]() -> core::LoopChannel {
+        auto ch = make_dgram_channel(loop, local);
 
         if (!ch.has_value()) {
           throw std::runtime_error("make udp channel failed");
@@ -444,7 +640,7 @@ UdpSocket::UdpSocket(core::Loop &loop, const InetAddr &local)
         return std::move(ch).value();
       }()) {}
 
-void UdpSocket::start() {
+void DgramSocket::start() {
   bool expected{false};
   if (!started_.compare_exchange_strong(expected, true)) {
     /* 已经启动 */
@@ -456,33 +652,289 @@ void UdpSocket::start() {
     if ((event_types & core::EventType::kRead) == core::EventType::kRead) {
       /* 可读事件,循环读取缓冲区所有的包 */
       while (true) {
-        const auto [ret, source_addr] = udp_recv(udp_channel_, recv_buf_);
+        const auto [len, source_addr] = dgram_recv(dgram_channel_, recv_buf_);
         if (!source_addr.has_value()) {
           /* EAGAIN或系统错误(有log) */
           break;
         }
 
-        auto to_user =
-            std::vector<uint8_t>{recv_buf_.begin(), recv_buf_.begin() + ret};
-        on_read(std::move(to_user), source_addr.value());
+        on_read({recv_buf_.begin(), recv_buf_.begin() + len},
+                source_addr.value());
       }
     }
 
     if ((event_types & core::EventType::kError) == core::EventType::kError) {
-      /* 错误事件 */
-      on_error();
+      /* 错误事件，清除 */
+      int32_t err{0};
+      socklen_t len = sizeof(err);
+      getsockopt(dgram_channel_.get_fd(), SOL_SOCKET, SO_ERROR, &err, &len);
+
+      if (err != 0) {
+        on_error(err);
+      }
     }
 
     /* 其他事件暂不支持 */
   };
 
-  udp_channel_.update_event(weak_from_this(),
-                            core::EventType::kRead | core::EventType::kError,
-                            core::EventMode::kDefault, std::move(cb));
+  dgram_channel_.update_event(weak_from_this(),
+                              core::EventType::kRead | core::EventType::kError,
+                              core::EventMode::kDefault, std::move(cb));
 }
 
-void UdpSocket::stop() {
+void DgramSocket::stop() {
   started_ = false;
-  udp_channel_.disable_event();
+  dgram_channel_.disable_event();
+}
+
+StreamClientSocket::StreamClientSocket(core::Loop &loop, const InetAddr &local)
+    : recv_buf_(UINT16_MAX), send_buf_(UINT16_MAX),
+      stream_channel_([&]() -> core::LoopChannel {
+        auto ch = make_stream_client_channel(loop, local);
+
+        if (!ch.has_value()) {
+          throw std::runtime_error("make stream channel failed");
+        }
+
+        return std::move(ch).value();
+      }()),
+      connect_timer_channel_([&]() -> core::LoopChannel {
+        auto ch = make_timer_channel(loop);
+
+        if (!ch.has_value()) {
+          throw std::runtime_error("make timer channel failed");
+        }
+
+        return std::move(ch).value();
+      }()) {}
+
+void StreamClientSocket::connect(const InetAddr &addr, uint64_t timeout_ms) {
+  ConnectState expected{ConnectState::kDisconnected};
+  if (!connected_.compare_exchange_strong(expected,
+                                          ConnectState::kConnecting)) {
+    /* 已经连接/正在连接 */
+    return;
+  }
+
+  if (const auto ret = ::connect(stream_channel_.get_fd(), addr.get_sockaddr(),
+                                 addr.get_socklen());
+      ret == 0) {
+    /* 立即成功 */
+    connected_ = ConnectState::kConnected;
+    start();
+    return;
+  }
+
+  if (errno != EINPROGRESS) {
+    /* 连接失败 */
+    sys_error::error();
+    on_error(errno);
+    connected_ = ConnectState::kDisconnected;
+    return;
+  }
+
+  /* 检测连接 */
+  auto socket_cb = [this](const core::EventType event_types) {
+    if ((event_types & core::EventType::kWrite) == core::EventType::kWrite) {
+      /* 可写事件，开始检测 */
+      int err = 0;
+      socklen_t len = sizeof(err);
+      getsockopt(stream_channel_.get_fd(), SOL_SOCKET, SO_ERROR, &err, &len);
+
+      if (err != 0) {
+        /* 连接失败 */
+        connected_ = ConnectState::kDisconnected;
+        connect_timer_channel_.disable_event();
+        on_error(err);
+        return;
+      }
+
+      /* 成功 */
+      connected_ = ConnectState::kConnected;
+      connect_timer_channel_.disable_event();
+      start();
+      return;
+    }
+  };
+
+  stream_channel_.update_event(weak_from_this(), core::EventType::kWrite,
+                               core::EventMode::kDefault, std::move(socket_cb));
+
+  /* 超时检查 */
+  auto timer_cb = [this](const core::EventType) {
+    /* 超时事件到->检查连接状态 */
+    uint64_t val;
+    while (read(connect_timer_channel_.get_fd(), &val, sizeof(val)) > 0)
+      ;
+
+    if (connected_ == ConnectState::kConnected) {
+      /* 成功连接关闭定时器 */
+      connect_timer_channel_.disable_event();
+      return;
+    }
+
+    connected_ = ConnectState::kDisconnected;
+    connect_timer_channel_.disable_event();
+    on_error(ETIMEDOUT);
+  };
+
+  connect_timer_channel_.update_event(weak_from_this(), core::EventType::kRead,
+                                      core::EventMode::kDefault,
+                                      std::move(timer_cb));
+
+  /* 启动超时器 */
+  auto task = [this, timeout_ms]() {
+    reset_timer_fd(connect_timer_channel_.get_fd(), timeout_ms);
+  };
+
+  connect_timer_channel_.post_io_task(weak_from_this(), std::move(task));
+}
+
+void StreamClientSocket::start() {
+  bool expected{false};
+  if (!started_.compare_exchange_strong(expected, true)) {
+    /* 已经启动 */
+    return;
+  }
+  started_ = true;
+
+  auto cb = [this](const core::EventType event_types) {
+    bool disconnected{false};
+
+    if ((event_types & core::EventType::kRead) == core::EventType::kRead) {
+      /* 可读事件,循环读取缓冲区所有的流直到EAGIN */
+      while (true) {
+        const auto status = stream_recv(stream_channel_, recv_buf_);
+
+        switch (status) {
+        case IoStatus::kSuccess: {
+          /* 读取到EGAIN */
+          continue;
+        }
+
+        case IoStatus::kTryAgain: {
+          break;
+        }
+
+        case IoStatus::kDisconnected: {
+          /* 对端关闭 */
+          disconnected = true;
+          break;
+        }
+
+        case IoStatus::kError: {
+          /* 系统错误，已打log */
+          recv_buf_.clear();
+          break;
+        }
+
+        default:
+          /* 不可达代码 */
+          assert(false && "unknown io status");
+          break;
+        }
+        break;
+      }
+    }
+
+    if ((event_types & core::EventType::kWrite) == core::EventType::kWrite) {
+      /* 可写事件,循环写 send_buf_ 缓冲区的内容直到EAGIN */
+      while (true) {
+        const auto status = stream_send(stream_channel_, send_buf_);
+
+        switch (status) {
+        case IoStatus::kSuccess: {
+          /* 发送成功 */
+          if (send_buf_.size() == 0) {
+            /* 缓冲区数据发送完毕 */
+            /* 取消注册EPOLL可写事件 */
+            const auto [old_types, old_modes] =
+                stream_channel_.get_event_info();
+            stream_channel_.update_event(old_types & ~core::EventType::kWrite,
+                                         old_modes);
+            break;
+          }
+          continue;
+        }
+
+        case IoStatus::kTryAgain: {
+          break;
+        }
+
+        case IoStatus::kDisconnected: {
+          /* 对端关闭 */
+          disconnected = true;
+          break;
+        }
+
+        case IoStatus::kError: {
+          /* 系统错误，已打log */
+          recv_buf_.clear();
+          break;
+        }
+
+        default:
+          /* 不可达代码 */
+          assert(false && "unknown io status");
+          return;
+        }
+        break;
+      }
+    }
+
+    if ((event_types & core::EventType::kError) == core::EventType::kError) {
+      /* 错误事件，清除 */
+      int32_t err{0};
+      socklen_t len = sizeof(err);
+      getsockopt(stream_channel_.get_fd(), SOL_SOCKET, SO_ERROR, &err, &len);
+
+      if (err != 0) {
+        send_buf_.clear();
+        on_error(err);
+      }
+    }
+
+    /* 其他事件暂不支持 */
+
+    /* 处理缓冲区内所有数据 */
+    while (true) {
+      auto consume_len = on_split();
+      if (consume_len <= 0) {
+        /* 缓冲区已经没有完整的一帧 */
+        break;
+      }
+
+      /* 切分了一帧 */
+      on_fragment({recv_buf_.begin(), recv_buf_.begin() + consume_len});
+
+      /* 移除已处理的数据 */
+      recv_buf_.pop(static_cast<ssize_t>(consume_len));
+    }
+
+    if (disconnected) {
+      /* 对端关闭 */
+      on_disconnect();
+    }
+  };
+
+  if (send_buf_.empty()) {
+    /* 连接期间发送缓冲区无数据 */
+    stream_channel_.update_event(
+        weak_from_this(), core::EventType::kRead | core::EventType::kError,
+        core::EventMode::kDefault, std::move(cb));
+  } else {
+    /* 连接期间发送缓冲区有数据 */
+    stream_channel_.update_event(weak_from_this(),
+                                 core::EventType::kRead |
+                                     core::EventType::kWrite |
+                                     core::EventType::kError,
+                                 core::EventMode::kDefault, std::move(cb));
+  }
+}
+
+void StreamClientSocket::stop() {
+  started_ = false;
+  stream_channel_.disable_event();
+  connect_timer_channel_.disable_event();
 }
 } // namespace kzevent::net

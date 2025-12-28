@@ -1,7 +1,9 @@
 set(KZEVENT_SOURCES
         core.cpp
         log.cpp
+        stream_buffer.cpp
         net/inet.cpp
+        net/tcp_socket.cpp
         net/udp_socket.cpp
         timer/timer.cpp
 )

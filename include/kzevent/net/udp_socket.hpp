@@ -15,7 +15,7 @@ namespace kzevent::net::udp {
 using ErrorCallBack = std::function<void()>;
 
 /*-------------------- UDP node  --------------------*/
-class UdpNode : public UdpSocket {
+class UdpNode : public DgramSocket {
   /* node 接收回调 */
   using NodeCallBack =
       std::function<void(const std::shared_ptr<UdpNode> &udp_node,
@@ -29,17 +29,15 @@ public:
                                                 const InetAddr &local);
 
   /* 方法 */
-  using UdpSocket::start;
+  using DgramSocket::post_send_task;
 
-  using UdpSocket::stop;
+  using DgramSocket::post_heavy_task;
 
-  using UdpSocket::post_send_task;
+  using DgramSocket::start;
 
-  using UdpSocket::post_heavy_task;
+  using DgramSocket::stop;
 
   void set_read_cb(NodeCallBack cb) noexcept;
-
-  void set_error_cb(ErrorCallBack cb) noexcept;
 
 private:
   /* 构造函数 */
@@ -48,19 +46,17 @@ private:
   /* 基类接口 */
   void on_read(std::vector<uint8_t> data, const InetAddr &source) override;
 
-  void on_error() override;
+  void on_error(int32_t err) override;
 
   /* 回调 */
   NodeCallBack read_cb_{};
-  ErrorCallBack error_cb_{};
 };
 
 /*-------------------- UDP client  --------------------*/
-class UdpClient : public UdpSocket {
+class UdpClient : public DgramSocket {
   /* client 接收回调 */
-  using ClientCallBack =
-      std::function<void(const std::shared_ptr<UdpClient> &udp_client,
-                         std::vector<std::uint8_t> data)>;
+  using ClientCallBack = std::function<void(
+      const std::shared_ptr<UdpClient> &udp_client, std::vector<uint8_t> data)>;
 
 public:
   ~UdpClient() override;
@@ -71,13 +67,13 @@ public:
                                                     const InetAddr &source);
 
   /* 方法 */
-  using UdpSocket::start;
-
-  using UdpSocket::stop;
-
   template <typename container> void post_send_task(container data);
 
-  using UdpSocket::post_heavy_task;
+  using DgramSocket::post_heavy_task;
+
+  using DgramSocket::start;
+
+  using DgramSocket::stop;
 
   void set_read_cb(ClientCallBack cb) noexcept;
 
@@ -90,7 +86,7 @@ private:
   /* 基类接口 */
   void on_read(std::vector<uint8_t> data, const InetAddr &source) override;
 
-  void on_error() override;
+  void on_error(int32_t err) override;
 
   /* 回调 */
   ClientCallBack read_cb_{};
@@ -101,7 +97,7 @@ private:
 };
 
 /*-------------------- UDP server  --------------------*/
-class UdpServer : public UdpSocket {
+class UdpServer : public DgramSocket {
 public:
   /* 业务会话 */
   class UdpSession {
@@ -116,7 +112,7 @@ public:
                      const InetAddr &source,
                      std::chrono::steady_clock::time_point time_stamp);
 
-    /* 接口 */
+    /* 方法 */
     void set_user_context(std::shared_ptr<void> user_context) noexcept;
 
     [[nodiscard]] std::shared_ptr<void> get_user_context() const noexcept;
@@ -143,7 +139,7 @@ public:
   /* server新建session和接收回调 */
   using ServerCallBack =
       std::function<void(const std::shared_ptr<UdpSession> &udp_session,
-                         std::vector<std::uint8_t> data)>;
+                         std::vector<uint8_t> data)>;
 
   ~UdpServer() override;
 
@@ -152,7 +148,7 @@ public:
   make_udp_server(core::Loop &loop, const InetAddr &local,
                   uint64_t session_timeout_ms = 60000);
 
-  /* 接口 */
+  /* 方法 */
   void start();
 
   void stop();
@@ -161,29 +157,27 @@ public:
 
   void set_read_cb(ServerCallBack cb) noexcept;
 
-  void set_error_cb(ErrorCallBack cb) noexcept;
-
 private:
   /* 构造函数 */
   UdpServer(core::Loop &loop, const InetAddr &local,
             uint64_t session_timeout_ms);
 
-  using UdpSocket::post_send_task;
+  using DgramSocket::post_send_task;
 
-  using UdpSocket::post_heavy_task;
+  using DgramSocket::post_heavy_task;
 
   /* 基类接口 */
   void on_read(std::vector<uint8_t> data, const InetAddr &source) override;
 
-  void on_error() override;
+  void on_error(int32_t err) override;
 
   /* 回调 */
   ServerCallBack new_session_cb_{};
   ServerCallBack read_cb_{};
-  ErrorCallBack error_cb_{};
 
   /* 会话管理 */
   std::unordered_map<InetAddr, std::shared_ptr<UdpSession>> sessions_{};
+  InetAddr local_;
 
   /* 默认超时时长1min */
   core::LoopChannel timer_channel_;
@@ -195,7 +189,7 @@ private:
 
 /*-------------------- 模板实现  --------------------*/
 template <typename container> void UdpClient::post_send_task(container data) {
-  UdpSocket::post_send_task(std::move(data), source_);
+  DgramSocket::post_send_task(std::move(data), source_);
 }
 
 template <typename container>

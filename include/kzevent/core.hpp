@@ -22,7 +22,7 @@ enum class EventType : uint32_t {
   kRead = 1U << 0,
   kWrite = 1U << 1,
   kError = 1U << 2,
-  kHangUp = 1U << 3,
+  kShutdown = 1U << 3,
 };
 
 /* 事件模式（强制ET） */
@@ -42,6 +42,10 @@ constexpr EventType operator&(EventType a, EventType b) noexcept {
                                 static_cast<uint32_t>(b));
 }
 
+constexpr EventType operator~(EventType a) noexcept {
+  return static_cast<EventType>(~static_cast<uint32_t>(a));
+}
+
 /* EventMode运算符重载  */
 constexpr EventMode operator|(EventMode a, EventMode b) noexcept {
   return static_cast<EventMode>(static_cast<uint32_t>(a) |
@@ -51,6 +55,10 @@ constexpr EventMode operator|(EventMode a, EventMode b) noexcept {
 constexpr EventMode operator&(EventMode a, EventMode b) noexcept {
   return static_cast<EventMode>(static_cast<uint32_t>(a) &
                                 static_cast<uint32_t>(b));
+}
+
+constexpr EventMode operator~(EventMode a) noexcept {
+  return static_cast<EventMode>(~static_cast<uint32_t>(a));
 }
 
 using CallBack = std::function<void(const EventType)>;
@@ -91,6 +99,8 @@ private:
   void unregister_fd(int32_t fd);
 
   void enable_fd(int32_t fd, EventType types, EventMode modes, CallBack cb);
+
+  void enable_fd(int32_t fd, EventType types, EventMode modes);
 
   void disable_fd(int32_t fd);
 
@@ -153,7 +163,11 @@ public:
 
   template <typename Fun>
   void update_event(LifeChecker life_checker, EventType types, EventMode modes,
-                    Fun cb) const;
+                    Fun cb);
+
+  void update_event(EventType types, EventMode modes);
+
+  [[nodiscard]] std::pair<EventType, EventMode> get_event_info() const;
 
   void disable_event() const;
 
@@ -168,12 +182,14 @@ public:
 private:
   Loop *in_loop_{nullptr};
   int32_t fd_{-1};
+  EventType event_types_{EventType::kDefault};
+  EventMode event_modes_{EventMode::kDefault};
 };
 
 /*-------------------- 模板实现 --------------------*/
 template <typename Fun>
 void LoopChannel::update_event(LifeChecker life_checker, const EventType types,
-                               const EventMode modes, Fun cb) const {
+                               const EventMode modes, Fun cb) {
   if (fd_ == -1 || in_loop_ == nullptr) {
     /* 无效的channel不允许访问 */
     KZ_LOG_ERROR("invalid channel be accessed!");
@@ -191,6 +207,8 @@ void LoopChannel::update_event(LifeChecker life_checker, const EventType types,
   };
 
   in_loop_->enable_fd(fd_, types, modes, std::move(wrapper_cb));
+  event_types_ = types;
+  event_modes_ = modes;
 }
 
 template <typename Fun>

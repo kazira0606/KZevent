@@ -54,15 +54,10 @@ TEST_F(KZUdpTest, EchoUdpNodeTestIpv4) {
   /* 设置node回调 */
   echo_node->set_read_cb(
       [](const auto &udp_node, auto data, auto source) mutable {
-        /* heavy线程处理数据 */
-        auto heavy_task = [udp_node, source, data = std::move(data)]() mutable {
-          /* 处理数据 */
-          data.push_back(data.size());
-          /* 回到io线程发送数据 */
-          udp_node->post_send_task(std::move(data), source);
-        };
-
-        udp_node->post_heavy_task(std::move(heavy_task));
+        /* 处理数据 */
+        data.push_back(data.size());
+        /* 回到io线程发送数据 */
+        udp_node->post_send_task(std::move(data), source);
       });
 
   /* 统计收到的包数量 */
@@ -75,8 +70,7 @@ TEST_F(KZUdpTest, EchoUdpNodeTestIpv4) {
        ++client_index) {
     client_threads.emplace_back([&, client_index]() {
       /* 创建客户端 */
-      const auto client_addr =
-          net::InetAddr::make_ipv4("0.0.0.0", client_port_start + client_index);
+      const auto client_addr = net::InetAddr::make_ipv4("0.0.0.0", 0);
       ASSERT_TRUE(client_addr.has_value());
 
       const auto source_addr =
@@ -226,7 +220,6 @@ TEST_F(KZUdpTest, UdpNodeStopThenStartTest) {
 TEST_F(KZUdpTest, EchoUdpServerTestIpv6_ContextFeature) {
   using namespace kzevent::net::udp;
   constexpr uint16_t server_port{7777};
-  constexpr uint16_t client_port_start{7778};
 
   /* 回声server节点 */
   const auto echo_server_addr = net::InetAddr::make_ipv6("::", server_port);
@@ -284,8 +277,7 @@ TEST_F(KZUdpTest, EchoUdpServerTestIpv6_ContextFeature) {
        ++client_index) {
     client_threads.emplace_back([&, client_index]() {
       /* 创建客户端 */
-      const auto client_addr =
-          net::InetAddr::make_ipv6("::", client_port_start + client_index);
+      const auto client_addr = net::InetAddr::make_ipv6("::", 0);
       ASSERT_TRUE(client_addr.has_value());
 
       /* 目标地址 */

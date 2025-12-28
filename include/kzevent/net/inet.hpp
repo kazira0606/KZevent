@@ -2,20 +2,24 @@
 
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
-#include <sys/stat.h>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
+#include <bits/types/struct_iovec.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 
 #include "kzevent/core.hpp"
+#include "kzevent/stream_buffer.hpp"
 #include "kzevent/sys_error.hpp"
 
 namespace kzevent::net {
@@ -67,10 +71,17 @@ private:
 
 /*-------------------- Channel工厂  --------------------*/
 [[nodiscard]] std::optional<core::LoopChannel>
-make_udp_channel(core::Loop &loop, const InetAddr &addr);
+make_dgram_channel(core::Loop &loop, const InetAddr &addr);
 
 [[nodiscard]] std::optional<core::LoopChannel>
-make_timer_channel(core::Loop &loop, uint64_t timeout_ms);
+make_stream_server_channel(core::Loop &loop, const InetAddr &addr);
+
+[[nodiscard]] std::optional<core::LoopChannel>
+make_stream_client_channel(core::Loop &loop, const InetAddr &addr);
+
+[[nodiscard]] std::optional<core::LoopChannel>
+make_timer_channel(core::Loop &loop, uint64_t timeout_ms = 0,
+                   uint64_t repeat_ms = 0);
 
 /*-------------------- 模板限制  --------------------*/
 /* 发送函数允许的模板类型 */
@@ -86,58 +97,37 @@ struct is_allowed_for_send<std::array<std::uint8_t, N>> : std::true_type {};
 template <> struct is_allowed_for_send<std::string> : std::true_type {};
 
 template <typename T>
-inline constexpr bool is_allowed_for_send_v = is_allowed_for_send<T>::value;
-
-/* 接收函数允许的模板类型 */
-template <typename T> struct is_allowed_for_recv : std::false_type {};
-
-template <>
-struct is_allowed_for_recv<std::vector<std::uint8_t>> : std::true_type {};
-
-template <std::size_t N>
-struct is_allowed_for_recv<std::array<std::uint8_t, N>> : std::true_type {};
-
-template <typename T>
-inline constexpr bool is_allowed_for_recv_v = is_allowed_for_recv<T>::value;
-
-/* 模板类型断言 */
-template <typename T> constexpr void is_allowed_type_for_send() {
-  using CleanType = std::remove_cv_t<std::remove_reference_t<T>>;
-  static_assert(is_allowed_for_send_v<CleanType>, "send type must be one of:\n"
-                                                  "std::vector < std::uint8_t >"
-                                                  "std::array<std::uint8_t, N>"
-                                                  "std::string");
-}
-
-template <typename T> constexpr void is_allowed_type_for_recv() {
-  using CleanType = std::remove_cv_t<std::remove_reference_t<T>>;
-  static_assert(is_allowed_for_recv_v<CleanType>,
-                "recv type must be one of:\n"
-                "std::vector < std::uint8_t >"
-                "std::array<std::uint8_t, N>");
-}
+inline constexpr bool is_allowed_for_send_v =
+    is_allowed_for_send<std::decay_t<T>>::value;
 } // namespace detail
 
 /*-------------------- 网络接口  --------------------*/
-/* udp */
+/* dgram */
 template <typename container>
-void udp_send(core::LoopChannel &channel, const container &data,
-              const InetAddr &addr);
+void dgram_send(core::LoopChannel &channel, const container &data,
+                const InetAddr &addr);
+
+std::pair<ssize_t, std::optional<InetAddr>>
+dgram_recv(core::LoopChannel &channel, std::array<uint8_t, UINT16_MAX> &buf);
+
+/* stream */
+enum class IoStatus { kSuccess, kTryAgain, kDisconnected, kError };
 
 template <typename container>
-std::pair<ssize_t, std::optional<InetAddr>> udp_recv(core::LoopChannel &channel,
-                                                     container &buf);
+std::pair<ssize_t, IoStatus> stream_send(core::LoopChannel &channel,
+                                         const container &data);
 
-/* tcp */
-/* 暂未实现 */
+IoStatus stream_send(core::LoopChannel &channel, core::StreamBuffer &buf);
+
+IoStatus stream_recv(core::LoopChannel &channel, core::StreamBuffer &buf);
 
 /*-------------------- 网络基类  --------------------*/
-class UdpSocket : public std::enable_shared_from_this<UdpSocket> {
+class DgramSocket : public std::enable_shared_from_this<DgramSocket> {
 public:
-  virtual ~UdpSocket() = default;
+  virtual ~DgramSocket() = default;
 
 protected:
-  UdpSocket(core::Loop &loop, const InetAddr &local);
+  DgramSocket(core::Loop &loop, const InetAddr &local);
 
   /* 方法 */
   template <typename container>
@@ -153,22 +143,76 @@ private:
   /* 接口 */
   virtual void on_read(std::vector<uint8_t> data, const InetAddr &source) = 0;
 
-  virtual void on_error() = 0;
+  virtual void on_error(int32_t err) = 0;
 
-  core::LoopChannel udp_channel_;
+  core::LoopChannel dgram_channel_;
 
   /* 接收缓冲区 */
-  std::array<uint8_t, 65536> recv_buf_{};
+  std::array<uint8_t, UINT16_MAX> recv_buf_{};
 
   /* 启动标志 */
   std::atomic<bool> started_{false};
 };
 
+// class StreamServerSocket : public
+// std::enable_shared_from_this<StreamServerSocket> { public:
+//   virtual ~StreamServerSocket() = default;
+
+// protected:
+//   StreamServerSocket();
+// };
+
+class StreamClientSocket
+    : public std::enable_shared_from_this<StreamClientSocket> {
+public:
+  virtual ~StreamClientSocket() = default;
+
+protected:
+  StreamClientSocket(core::Loop &loop, const InetAddr &local);
+
+  /* 方法 */
+  template <typename container> void post_send_task(container data);
+
+  template <typename Fun> void post_heavy_task(Fun task);
+
+  void connect(const InetAddr &addr, uint64_t timeout_ms);
+
+  void start();
+
+  void stop();
+
+  /* 接收缓冲区 */
+  core::StreamBuffer recv_buf_{UINT16_MAX};
+
+  /* 发送缓冲区 */
+  core::StreamBuffer send_buf_{UINT16_MAX};
+
+private:
+  /* 接口 */
+  virtual ssize_t on_split() = 0;
+
+  virtual void on_fragment(std::vector<uint8_t> fragment) = 0;
+
+  virtual void on_error(int32_t err) = 0;
+
+  virtual void on_disconnect() = 0;
+
+  core::LoopChannel stream_channel_;
+
+  /* 启动标志 */
+  std::atomic<bool> started_{false};
+
+  /* 连接标志 */
+  enum class ConnectState { kDisconnected, kConnecting, kConnected };
+  std::atomic<ConnectState> connected_{ConnectState::kDisconnected};
+  core::LoopChannel connect_timer_channel_;
+};
+
 /*-------------------- 模板实现  --------------------*/
 template <typename container>
-void udp_send(core::LoopChannel &channel, const container &data,
-              const InetAddr &addr) {
-  detail::is_allowed_type_for_send<container>();
+void dgram_send(core::LoopChannel &channel, const container &data,
+                const InetAddr &addr) {
+  static_assert(detail::is_allowed_for_send_v<container>, "invalid data type");
 
   if (const auto ret = sendto(channel.get_fd(), data.data(), data.size(), 0,
                               addr.get_sockaddr(), addr.get_socklen());
@@ -181,44 +225,114 @@ void udp_send(core::LoopChannel &channel, const container &data,
 }
 
 template <typename container>
-std::pair<ssize_t, std::optional<InetAddr>> udp_recv(core::LoopChannel &channel,
-                                                     container &buf) {
-  detail::is_allowed_type_for_recv<container>();
+std::pair<ssize_t, IoStatus> stream_send(core::LoopChannel &channel,
+                                         const container &data) {
+  const auto ret =
+      send(channel.get_fd(), data.data(), data.size(), MSG_NOSIGNAL);
 
-  sockaddr_storage source_addr{};
-  socklen_t source_len{sizeof(source_addr)};
-
-  if (const auto ret =
-          recvfrom(channel.get_fd(), buf.data(), buf.size(), 0,
-                   reinterpret_cast<sockaddr *>(&source_addr), &source_len);
-      ret >= 0) {
-    /* 成功（有截断风险） */
-    return std::make_pair(
-        ret, InetAddr::make_from_sockaddr(
-                 reinterpret_cast<const sockaddr *>(&source_addr), source_len));
-  } else {
-    if (errno != EAGAIN) {
-      /* 系统错误 */
-      sys_error::error();
+  if (ret < 0) {
+    if (errno == EAGAIN) {
+      /* 缓冲区满 */
+      return {ret, IoStatus::kTryAgain};
     }
-    return std::make_pair(ret, std::nullopt);
+
+    if (errno == EPIPE) {
+      /* 对端关闭 */
+      return {ret, IoStatus::kDisconnected};
+    }
+
+    /* 系统错误 */
+    sys_error::error();
+    return {ret, IoStatus::kError};
   }
+
+  return {ret, IoStatus::kSuccess};
 }
 
 template <typename container>
-void UdpSocket::post_send_task(container data, const InetAddr &source) {
+void DgramSocket::post_send_task(container data, const InetAddr &source) {
+  static_assert(detail::is_allowed_for_send_v<container>, "invalid data type");
+
   auto task = [this, data = std::move(data), source]() {
-    udp_send(udp_channel_, data, source);
+    dgram_send(dgram_channel_, data, source);
   };
 
-  udp_channel_.post_io_task(weak_from_this(), std::move(task));
+  dgram_channel_.post_io_task(weak_from_this(), std::move(task));
 }
 
-template <typename Fun> void UdpSocket::post_heavy_task(Fun task) {
-  udp_channel_.post_heavy_task(weak_from_this(), std::move(task));
+template <typename Fun> void DgramSocket::post_heavy_task(Fun task) {
+  dgram_channel_.post_heavy_task(weak_from_this(), std::move(task));
+}
+
+template <typename container>
+void StreamClientSocket::post_send_task(container data) {
+  static_assert(detail::is_allowed_for_send_v<container>, "invalid data type");
+
+  auto task = [this, data = std::move(data)] {
+    if (!send_buf_.empty() || connected_ != ConnectState::kConnected) {
+      /* 发送缓冲区不为空/未连接 -> 进缓冲区排队 */
+      send_buf_.insert(data.begin(), data.end());
+      return;
+    }
+
+    /* 发送缓冲区为空且已连接 -> 直接发送 */
+    const auto [ret, status] = stream_send(stream_channel_, data);
+
+    switch (status) {
+    case IoStatus::kSuccess: {
+      /* 发送成功 */
+      if (ret == data.size()) {
+        /* 发送完毕 */
+        break;
+      }
+
+      /* 剩余未发送数据 -> 进缓冲区排队 */
+      send_buf_.insert(data.begin() + ret, data.end());
+      /* 注册EPOLL可写事件 */
+      const auto [old_types, old_modes] = stream_channel_.get_event_info();
+      stream_channel_.update_event(old_types | core::EventType::kWrite,
+                                   old_modes);
+      break;
+    }
+
+    case IoStatus::kTryAgain: {
+      /* 内核缓冲区满 -> 进缓冲区排队 */
+      send_buf_.insert(data.begin(), data.end());
+      /* 注册EPOLL可写事件 */
+      const auto [old_types, old_modes] = stream_channel_.get_event_info();
+      stream_channel_.update_event(old_types | core::EventType::kWrite,
+                                   old_modes);
+      break;
+    }
+
+    case IoStatus::kDisconnected: {
+      /* 对端关闭 */
+      send_buf_.clear();
+      on_error(ECONNRESET);
+      break;
+    }
+
+    case IoStatus::kError: {
+      /* 系统错误已打日志 */
+      break;
+    }
+
+    default:
+      /* 不可达代码 */
+      assert(false && "unknown io status");
+      break;
+    }
+  };
+
+  stream_channel_.post_io_task(weak_from_this(), std::move(task));
+}
+
+template <typename Fun> void StreamClientSocket::post_heavy_task(Fun task) {
+  stream_channel_.post_heavy_task(weak_from_this(), std::move(task));
 }
 } // namespace kzevent::net
 
+/* InetAddr 哈希函数 */
 template <> struct std::hash<kzevent::net::InetAddr> {
   size_t operator()(const kzevent::net::InetAddr &addr) const noexcept {
     return addr.hash();
