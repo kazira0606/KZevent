@@ -447,7 +447,7 @@ void swap(LoopChannel &a, LoopChannel &b) noexcept {
   std::swap(a.in_loop_, b.in_loop_);
 }
 
-void LoopChannel::update_event(EventType types, EventMode modes) {
+void LoopChannel::update_event(const EventType types, const EventMode modes) {
   if (fd_ == -1 || in_loop_ == nullptr) {
     /* 无效的channel不允许访问 */
     KZ_LOG_ERROR("invalid channel be accessed!");
@@ -482,5 +482,15 @@ int32_t LoopChannel::get_fd() const {
   }
 
   return fd_;
+}
+
+Loop *LoopChannel::get_loop() const {
+  if (fd_ == -1 || in_loop_ == nullptr) {
+    /* 无效的channel不允许访问 */
+    KZ_LOG_ERROR("invalid channel be accessed!");
+    return nullptr;
+  }
+
+  return in_loop_;
 }
 } // namespace kzevent::core

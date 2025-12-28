@@ -22,7 +22,7 @@ class UdpNode : public DgramSocket {
                          std::vector<uint8_t> data, InetAddr source)>;
 
 public:
-  ~UdpNode() override;
+  ~UdpNode() override = default;
 
   /* 静态工厂 */
   static std::shared_ptr<UdpNode> make_udp_node(core::Loop &loop,
@@ -59,7 +59,7 @@ class UdpClient : public DgramSocket {
       const std::shared_ptr<UdpClient> &udp_client, std::vector<uint8_t> data)>;
 
 public:
-  ~UdpClient() override;
+  ~UdpClient() override = default;
 
   /* 静态工厂 */
   static std::shared_ptr<UdpClient> make_udp_client(core::Loop &loop,
@@ -141,7 +141,10 @@ public:
       std::function<void(const std::shared_ptr<UdpSession> &udp_session,
                          std::vector<uint8_t> data)>;
 
-  ~UdpServer() override;
+  ~UdpServer() override {
+    started_ = false;
+    timer_channel_.disable_event();
+  }
 
   /* 静态工厂 */
   static std::shared_ptr<UdpServer>
@@ -149,9 +152,9 @@ public:
                   uint64_t session_timeout_ms = 60000);
 
   /* 方法 */
-  void start();
+  void start() override;
 
-  void stop();
+  void stop() override;
 
   void set_new_session_cb(ServerCallBack cb) noexcept;
 

@@ -179,6 +179,8 @@ public:
 
   [[nodiscard]] int32_t get_fd() const;
 
+  [[nodiscard]] Loop *get_loop() const;
+
 private:
   Loop *in_loop_{nullptr};
   int32_t fd_{-1};

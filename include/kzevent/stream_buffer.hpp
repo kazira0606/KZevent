@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <sys/types.h>
@@ -15,7 +14,7 @@ public:
 
   ~StreamBuffer() = default;
 
-  // 禁止拷贝，允许移动
+  /* 禁止拷贝，允许移动 */
   StreamBuffer(const StreamBuffer &) = delete;
 
   StreamBuffer &operator=(const StreamBuffer &) = delete;
@@ -27,14 +26,18 @@ public:
   template <typename Iterator>
   void insert(const Iterator &begin, const Iterator &end);
 
+  /* 获取数据指针 */
   uint8_t *data() noexcept;
 
   uint8_t *begin() noexcept;
 
+  /* 获取数据末尾指针 */
   uint8_t *end() noexcept;
 
+  /* 获取数据大小 */
   [[nodiscard]] ssize_t size() const noexcept;
 
+  /* 获取尾部剩余空间大小 */
   [[nodiscard]] ssize_t space() const noexcept;
 
   void push(ssize_t len) noexcept;

@@ -19,8 +19,8 @@ target_compile_definitions(kz_unit_tests PRIVATE
         KZEVENT_TEST_DATA_SIZE=65536
         # log_test配置宏
         KZEVENT_LOG_DIR="${CMAKE_BINARY_DIR}"
-        # udp_socket_test配置宏
-        KZEVENT_CLIENT_NUM=100
+        # udp_socket_test / tcp_socket_test 配置宏
+        KZEVENT_CLIENT_NUM=50
         # timer_test配置宏
         KZEVENT_TIMER_CLIENT_NUM=99
 )

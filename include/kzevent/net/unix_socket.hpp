@@ -1,3 +1,5 @@
+#pragma once
+
 #include "kzevent/core.hpp"
 #include "kzevent/net/inet.hpp"
 

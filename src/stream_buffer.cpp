@@ -1,8 +1,6 @@
-#include <cstddef>
 #include <cstdint>
 #include <iterator>
 
-#include <iterator>
 #include <sys/types.h>
 
 #include "kzevent/stream_buffer.hpp"
@@ -20,9 +18,9 @@ ssize_t StreamBuffer::space() const noexcept {
   return std::distance(buffer_.begin() + writer_, buffer_.end());
 }
 
-void StreamBuffer::push(ssize_t len) noexcept { writer_ += len; }
+void StreamBuffer::push(const ssize_t len) noexcept { writer_ += len; }
 
-void StreamBuffer::pop(ssize_t len) noexcept {
+void StreamBuffer::pop(const ssize_t len) noexcept {
   reader_ += len;
 
   if (reader_ >= writer_) {
@@ -71,7 +69,7 @@ void StreamBuffer::shrink() {
   }
 
   shrink_count_ = 0;
-  size_t new_size =
+  const size_t new_size =
       buffer_.size() / 2 < initial_size_ ? initial_size_ : buffer_.size() / 2;
   buffer_.resize(new_size);
   buffer_.shrink_to_fit();

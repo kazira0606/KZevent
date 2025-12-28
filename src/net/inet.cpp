@@ -1,3 +1,4 @@
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -9,6 +10,7 @@
 #include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -19,22 +21,13 @@
 
 namespace kzevent::net {
 namespace {
-bool reset_timer_fd(int fd, uint64_t timeout_ms, uint64_t repeat_ms = 0) {
-  struct itimerspec ts {};
+bool reset_timer_fd(const int fd, const uint64_t timeout_ms) {
+  itimerspec ts{};
 
-  if (timeout_ms > 0) {
-    const auto sec = timeout_ms / 1000;
-    const auto nsec = (timeout_ms % 1000) * 1000000;
-    ts.it_value.tv_sec = static_cast<time_t>(sec);
-    ts.it_value.tv_nsec = static_cast<long>(nsec);
-  }
-
-  if (repeat_ms > 0) {
-    const auto repeat_sec = repeat_ms / 1000;
-    const auto repeat_nsec = (repeat_ms % 1000) * 1000000;
-    ts.it_interval.tv_sec = static_cast<time_t>(repeat_sec);
-    ts.it_interval.tv_nsec = static_cast<long>(repeat_nsec);
-  }
+  const auto sec = timeout_ms / 1000;
+  const auto nsec = (timeout_ms % 1000) * 1000000;
+  ts.it_value.tv_sec = static_cast<time_t>(sec);
+  ts.it_value.tv_nsec = static_cast<long>(nsec);
 
   return ::timerfd_settime(fd, 0, &ts, nullptr) != -1;
 }
@@ -64,9 +57,8 @@ bool InetAddr::operator==(const InetAddr &other) const noexcept {
     const auto other_ipv6_in{
         reinterpret_cast<const sockaddr_in6 *>(&other.addr_storage_)};
 
-    /* 比较port和ip和scope */
+    /* 比较port和ip */
     return self_ipv6_in->sin6_port == other_ipv6_in->sin6_port &&
-           self_ipv6_in->sin6_scope_id == other_ipv6_in->sin6_scope_id &&
            std::memcmp(&self_ipv6_in->sin6_addr, &other_ipv6_in->sin6_addr,
                        sizeof(in6_addr)) == 0;
   }
@@ -103,9 +95,50 @@ bool InetAddr::operator!=(const InetAddr &other) const noexcept {
 }
 
 size_t InetAddr::hash() const noexcept {
-  const std::string_view bytes(reinterpret_cast<const char *>(&addr_storage_),
-                               socklen_);
-  return std::hash<std::string_view>{}(bytes);
+  /* 初始种子 */
+  std::size_t seed = 0;
+
+  /* 叠加hash信息->协议 */
+  hash_combine(seed, std::hash<uint16_t>{}(addr_storage_.ss_family));
+
+  switch (addr_storage_.ss_family) {
+  case AF_INET: {
+    /* ipv4叠加hash信息->地址和端口 */
+    const auto sock_in = reinterpret_cast<const sockaddr_in *>(&addr_storage_);
+
+    hash_combine(seed, std::hash<uint32_t>{}(sock_in->sin_addr.s_addr));
+    hash_combine(seed, std::hash<uint16_t>{}(sock_in->sin_port));
+    break;
+  }
+
+  case AF_INET6: {
+    /* ipv6叠加hash信息->地址和端口 */
+    const auto sock_in = reinterpret_cast<const sockaddr_in6 *>(&addr_storage_);
+    const std::string_view addr_bytes(
+        reinterpret_cast<const char *>(sock_in->sin6_addr.s6_addr), 16);
+
+    hash_combine(seed, std::hash<std::string_view>{}(addr_bytes));
+    hash_combine(seed, std::hash<uint16_t>{}(sock_in->sin6_port));
+    break;
+  }
+
+  case AF_UNIX: {
+    /* unix叠加hash信息->路径 */
+    const auto sock_un = reinterpret_cast<const sockaddr_un *>(&addr_storage_);
+
+    if (constexpr auto base = offsetof(sockaddr_un, sun_path);
+        socklen_ > base) {
+      const std::string_view path(sock_un->sun_path, socklen_ - base);
+      hash_combine(seed, std::hash<std::string_view>{}(path));
+    }
+    break;
+  }
+
+  default:
+    /* 不可达 */
+    return 0;
+  }
+  return seed;
 }
 
 /* 静态工厂 */
@@ -425,6 +458,17 @@ std::optional<core::LoopChannel> make_dgram_channel(core::Loop &loop,
   return dgram_channel;
 }
 
+std::optional<core::LoopChannel> make_stream_session_channel(core::Loop &loop,
+                                                             const int32_t fd) {
+  if (fd == -1) {
+    sys_error::error();
+    return std::nullopt;
+  }
+  /* 立即移交fd便于RAII */
+  core::LoopChannel stream_channel(loop, fd);
+  return stream_channel;
+}
+
 std::optional<core::LoopChannel>
 make_stream_server_channel(core::Loop &loop, const InetAddr &addr) {
   const auto fd = socket(addr.get_sockaddr()->sa_family,
@@ -437,7 +481,7 @@ make_stream_server_channel(core::Loop &loop, const InetAddr &addr) {
   core::LoopChannel stream_channel(loop, fd);
 
   /* 可重用 */
-  int32_t opt = 1;
+  constexpr int32_t opt{1};
   if (const auto ret =
           setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
       ret == -1) {
@@ -459,6 +503,12 @@ make_stream_server_channel(core::Loop &loop, const InetAddr &addr) {
   /* 服务端显式bind */
   if (const auto ret = bind(fd, addr.get_sockaddr(), addr.get_socklen());
       ret == -1) {
+    sys_error::error();
+    return std::nullopt;
+  }
+
+  /* 监听 */
+  if (const auto ret = listen(fd, SOMAXCONN); ret == -1) {
     sys_error::error();
     return std::nullopt;
   }
@@ -492,8 +542,9 @@ make_stream_client_channel(core::Loop &loop, const InetAddr &addr) {
   return stream_channel;
 }
 
-std::optional<core::LoopChannel>
-make_timer_channel(core::Loop &loop, uint64_t timeout_ms, uint64_t repeat_ms) {
+std::optional<core::LoopChannel> make_timer_channel(core::Loop &loop,
+                                                    const uint64_t timeout_ms,
+                                                    const uint64_t repeat_ms) {
   const auto fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 
   if (fd == -1) {
@@ -512,7 +563,7 @@ make_timer_channel(core::Loop &loop, uint64_t timeout_ms, uint64_t repeat_ms) {
   const auto sec = timeout_ms / 1000;
   const auto nsec = (timeout_ms % 1000) * 1000000;
 
-  struct itimerspec ts {};
+  struct itimerspec ts{};
   /* 首次延迟 */
   ts.it_value.tv_sec = static_cast<time_t>(sec);
   ts.it_value.tv_nsec = static_cast<long>(nsec);
@@ -536,7 +587,8 @@ make_timer_channel(core::Loop &loop, uint64_t timeout_ms, uint64_t repeat_ms) {
 
 /*-------------------- 网络接口  --------------------*/
 std::pair<ssize_t, std::optional<InetAddr>>
-dgram_recv(core::LoopChannel &channel, std::array<uint8_t, UINT16_MAX> &buf) {
+dgram_recv(const core::LoopChannel &channel,
+           std::array<uint8_t, UINT16_MAX> &buf) {
   sockaddr_storage source_addr{};
   socklen_t source_len{sizeof(source_addr)};
 
@@ -556,7 +608,8 @@ dgram_recv(core::LoopChannel &channel, std::array<uint8_t, UINT16_MAX> &buf) {
               reinterpret_cast<const sockaddr *>(&source_addr), source_len)};
 }
 
-IoStatus stream_send(core::LoopChannel &channel, core::StreamBuffer &buf) {
+IoStatus stream_send(const core::LoopChannel &channel,
+                     core::StreamBuffer &buf) {
   const auto ret =
       send(channel.get_fd(), buf.begin(), buf.size(), MSG_NOSIGNAL);
 
@@ -581,7 +634,8 @@ IoStatus stream_send(core::LoopChannel &channel, core::StreamBuffer &buf) {
   return IoStatus::kSuccess;
 }
 
-IoStatus stream_recv(core::LoopChannel &channel, core::StreamBuffer &buf) {
+IoStatus stream_recv(const core::LoopChannel &channel,
+                     core::StreamBuffer &buf) {
   /* 栈缓冲区 */
   std::array<uint8_t, UINT16_MAX> ex_buf{};
 
@@ -589,8 +643,8 @@ IoStatus stream_recv(core::LoopChannel &channel, core::StreamBuffer &buf) {
   const auto buf_space = buf.space();
 
   /* StreamBuffer + array 聚合缓冲 */
-  std::array<iovec, 2> iobuf{{{buf.end(), static_cast<size_t>(buf_space)},
-                              {ex_buf.data(), ex_buf.size()}}};
+  const std::array<iovec, 2> iobuf{{{buf.end(), static_cast<size_t>(buf_space)},
+                                    {ex_buf.data(), ex_buf.size()}}};
 
   const auto ret =
       readv(channel.get_fd(), iobuf.data(), static_cast<int32_t>(iobuf.size()));
@@ -629,6 +683,7 @@ IoStatus stream_recv(core::LoopChannel &channel, core::StreamBuffer &buf) {
 }
 
 /*-------------------- 网络基类  --------------------*/
+/* dgram socket基类 */
 DgramSocket::DgramSocket(core::Loop &loop, const InetAddr &local)
     : dgram_channel_([&]() -> core::LoopChannel {
         auto ch = make_dgram_channel(loop, local);
@@ -641,8 +696,7 @@ DgramSocket::DgramSocket(core::Loop &loop, const InetAddr &local)
       }()) {}
 
 void DgramSocket::start() {
-  bool expected{false};
-  if (!started_.compare_exchange_strong(expected, true)) {
+  if (bool expected{false}; !started_.compare_exchange_strong(expected, true)) {
     /* 已经启动 */
     return;
   }
@@ -687,6 +741,264 @@ void DgramSocket::stop() {
   dgram_channel_.disable_event();
 }
 
+/* stream sesion */
+StreamServerSocket::StreamSession::StreamSession(
+    core::Loop &loop, const int32_t fd,
+    std::weak_ptr<StreamServerSocket> server)
+    : recv_buf_(UINT16_MAX), send_buf_(UINT16_MAX), server_(std::move(server)),
+      session_channel_([&]() -> core::LoopChannel {
+        auto ch = make_stream_session_channel(loop, fd);
+
+        if (!ch.has_value()) {
+          throw std::runtime_error("make udp channel failed");
+        }
+
+        return std::move(ch).value();
+      }()) {}
+
+void StreamServerSocket::StreamSession::set_user_context(
+    std::shared_ptr<void> user_context) noexcept {
+  user_context_ = std::move(user_context);
+}
+
+[[nodiscard]] std::shared_ptr<void>
+StreamServerSocket::StreamSession::get_user_context() const noexcept {
+  return user_context_;
+}
+
+void StreamServerSocket::StreamSession::start() {
+  auto cb = [this](const core::EventType event_types) {
+    bool disconnected{false};
+
+    /* 检查并延长所属的server的生命周期 */
+    const auto server = server_.lock();
+    if (server == nullptr) {
+      return;
+    }
+
+    if ((event_types & core::EventType::kRead) == core::EventType::kRead) {
+      /* 可读事件,循环读取缓冲区所有的流直到EAGIN */
+      while (true) {
+        switch (const auto status = stream_recv(session_channel_, recv_buf_);
+                status) {
+        case IoStatus::kSuccess: {
+          /* 读取到EGAIN */
+          continue;
+        }
+
+        case IoStatus::kTryAgain: {
+          break;
+        }
+
+        case IoStatus::kDisconnected: {
+          /* 对端关闭 */
+          disconnected = true;
+          break;
+        }
+
+        case IoStatus::kError: {
+          /* 系统错误，已打log */
+          recv_buf_.clear();
+          break;
+        }
+
+        default:
+          /* 不可达代码 */
+          assert(false && "unknown io status");
+        }
+        break;
+      }
+    }
+
+    if ((event_types & core::EventType::kWrite) == core::EventType::kWrite) {
+      /* 可写事件,循环写 send_buf_ 缓冲区的内容直到EAGIN */
+      while (true) {
+        switch (const auto status = stream_send(session_channel_, send_buf_);
+                status) {
+        case IoStatus::kSuccess: {
+          /* 发送成功 */
+          if (send_buf_.empty()) {
+            /* 缓冲区数据发送完毕 */
+            /* 取消注册EPOLL可写事件 */
+            const auto [old_types, old_modes] =
+                session_channel_.get_event_info();
+            session_channel_.update_event(old_types & ~core::EventType::kWrite,
+                                          old_modes);
+            break;
+          }
+          continue;
+        }
+
+        case IoStatus::kTryAgain: {
+          break;
+        }
+
+        case IoStatus::kDisconnected: {
+          /* 对端关闭 */
+          disconnected = true;
+          break;
+        }
+
+        case IoStatus::kError: {
+          /* 系统错误，已打log */
+          recv_buf_.clear();
+          break;
+        }
+
+        default:
+          /* 不可达代码 */
+          assert(false && "unknown io status");
+        }
+        break;
+      }
+    }
+
+    if ((event_types & core::EventType::kError) == core::EventType::kError) {
+      /* 错误事件，清除 */
+      int32_t err{0};
+      socklen_t len = sizeof(err);
+      getsockopt(session_channel_.get_fd(), SOL_SOCKET, SO_ERROR, &err, &len);
+
+      if (err != 0) {
+        send_buf_.clear();
+        server->on_session_error(err, shared_from_this());
+      }
+    }
+
+    /* 其他事件暂不支持 */
+
+    /* 处理缓冲区内所有数据 */
+    while (true) {
+      const auto consume_len = server->on_split(shared_from_this());
+      if (consume_len <= 0) {
+        /* 缓冲区已经没有完整的一帧 */
+        break;
+      }
+
+      /* 切分了一帧 */
+      server->on_fragment({recv_buf_.begin(), recv_buf_.begin() + consume_len},
+                          shared_from_this());
+
+      /* 移除已处理的数据 */
+      recv_buf_.pop(static_cast<ssize_t>(consume_len));
+    }
+
+    if (disconnected) {
+      /* 对端关闭 */
+      recv_buf_.clear();
+      send_buf_.clear();
+      server->on_disconnect(shared_from_this());
+    }
+  };
+
+  if (send_buf_.empty()) {
+    /* 连接期间发送缓冲区无数据 */
+    session_channel_.update_event(
+        weak_from_this(), core::EventType::kRead | core::EventType::kError,
+        core::EventMode::kDefault, std::move(cb));
+  } else {
+    /* 连接期间发送缓冲区有数据 */
+    session_channel_.update_event(weak_from_this(),
+                                  core::EventType::kRead |
+                                      core::EventType::kWrite |
+                                      core::EventType::kError,
+                                  core::EventMode::kDefault, std::move(cb));
+  }
+}
+
+void StreamServerSocket::StreamSession::stop() {
+  session_channel_.disable_event();
+
+  auto task = [this]() {
+    const auto server = server_.lock();
+    if (server == nullptr) {
+      return;
+    }
+    server->sessions_.erase(session_channel_.get_fd());
+  };
+
+  session_channel_.post_io_task(weak_from_this(), std::move(task));
+}
+
+/* stream server socket 基类 */
+StreamServerSocket::StreamServerSocket(core::Loop &loop, const InetAddr &local)
+    : listen_channel_([&]() -> core::LoopChannel {
+        auto ch = make_stream_server_channel(loop, local);
+
+        if (!ch.has_value()) {
+          throw std::runtime_error("make stream channel failed");
+        }
+
+        return std::move(ch).value();
+      }()) {}
+
+void StreamServerSocket::start() {
+  if (bool expected{false}; !started_.compare_exchange_strong(expected, true)) {
+    /* 已经启动 */
+    return;
+  }
+  started_ = true;
+
+  auto cb = [this](const core::EventType event_types) {
+    if ((event_types & core::EventType::kRead) == core::EventType::kRead) {
+      while (true) {
+        /* accept事件 */
+        sockaddr_storage client_addr{};
+        socklen_t client_len{sizeof(client_addr)};
+
+        if (const auto fd = accept4(listen_channel_.get_fd(),
+                                    reinterpret_cast<sockaddr *>(&client_addr),
+                                    &client_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
+            fd == -1) {
+          if (errno == EAGAIN) {
+            /* 缓冲区没有数据 */
+            break;
+          }
+
+          if (errno != EAGAIN && errno != ECONNABORTED) {
+            /* 系统错误 */
+            sys_error::error();
+            break;
+          }
+        } else {
+          /* 新会话 */
+          const auto session = std::make_shared<StreamSession>(
+              *listen_channel_.get_loop(), fd, weak_from_this());
+          sessions_.insert({session->session_channel_.get_fd(), session});
+
+          /* 启动会话 */
+          session->start();
+        }
+      }
+    }
+
+    if ((event_types & core::EventType::kError) == core::EventType::kError) {
+      /* 错误事件，清除 */
+      int32_t err{0};
+      socklen_t len = sizeof(err);
+      getsockopt(listen_channel_.get_fd(), SOL_SOCKET, SO_ERROR, &err, &len);
+
+      if (err != 0) {
+        KZ_LOG_FATAL("listen socket fatal error",
+                     std::error_code(errno, std::system_category()).message());
+        stop();
+      }
+    }
+
+    /* 其他事件暂不支持 */
+  };
+
+  listen_channel_.update_event(this->weak_from_this(),
+                               core::EventType::kRead | core::EventType::kError,
+                               core::EventMode::kDefault, std::move(cb));
+}
+
+void StreamServerSocket::stop() {
+  started_ = false;
+  listen_channel_.disable_event();
+}
+
+/* stream client socket基类 */
 StreamClientSocket::StreamClientSocket(core::Loop &loop, const InetAddr &local)
     : recv_buf_(UINT16_MAX), send_buf_(UINT16_MAX),
       stream_channel_([&]() -> core::LoopChannel {
@@ -709,8 +1021,8 @@ StreamClientSocket::StreamClientSocket(core::Loop &loop, const InetAddr &local)
       }()) {}
 
 void StreamClientSocket::connect(const InetAddr &addr, uint64_t timeout_ms) {
-  ConnectState expected{ConnectState::kDisconnected};
-  if (!connected_.compare_exchange_strong(expected,
+  if (auto expected{ConnectState::kDisconnected};
+      !connected_.compare_exchange_strong(expected,
                                           ConnectState::kConnecting)) {
     /* 已经连接/正在连接 */
     return;
@@ -791,8 +1103,7 @@ void StreamClientSocket::connect(const InetAddr &addr, uint64_t timeout_ms) {
 }
 
 void StreamClientSocket::start() {
-  bool expected{false};
-  if (!started_.compare_exchange_strong(expected, true)) {
+  if (bool expected{false}; !started_.compare_exchange_strong(expected, true)) {
     /* 已经启动 */
     return;
   }
@@ -804,9 +1115,8 @@ void StreamClientSocket::start() {
     if ((event_types & core::EventType::kRead) == core::EventType::kRead) {
       /* 可读事件,循环读取缓冲区所有的流直到EAGIN */
       while (true) {
-        const auto status = stream_recv(stream_channel_, recv_buf_);
-
-        switch (status) {
+        switch (const auto status = stream_recv(stream_channel_, recv_buf_);
+                status) {
         case IoStatus::kSuccess: {
           /* 读取到EGAIN */
           continue;
@@ -831,7 +1141,6 @@ void StreamClientSocket::start() {
         default:
           /* 不可达代码 */
           assert(false && "unknown io status");
-          break;
         }
         break;
       }
@@ -840,12 +1149,11 @@ void StreamClientSocket::start() {
     if ((event_types & core::EventType::kWrite) == core::EventType::kWrite) {
       /* 可写事件,循环写 send_buf_ 缓冲区的内容直到EAGIN */
       while (true) {
-        const auto status = stream_send(stream_channel_, send_buf_);
-
-        switch (status) {
+        switch (const auto status = stream_send(stream_channel_, send_buf_);
+                status) {
         case IoStatus::kSuccess: {
           /* 发送成功 */
-          if (send_buf_.size() == 0) {
+          if (send_buf_.empty()) {
             /* 缓冲区数据发送完毕 */
             /* 取消注册EPOLL可写事件 */
             const auto [old_types, old_modes] =
@@ -876,7 +1184,6 @@ void StreamClientSocket::start() {
         default:
           /* 不可达代码 */
           assert(false && "unknown io status");
-          return;
         }
         break;
       }
@@ -898,7 +1205,7 @@ void StreamClientSocket::start() {
 
     /* 处理缓冲区内所有数据 */
     while (true) {
-      auto consume_len = on_split();
+      const auto consume_len = on_split();
       if (consume_len <= 0) {
         /* 缓冲区已经没有完整的一帧 */
         break;
@@ -913,6 +1220,8 @@ void StreamClientSocket::start() {
 
     if (disconnected) {
       /* 对端关闭 */
+      recv_buf_.clear();
+      send_buf_.clear();
       on_disconnect();
     }
   };

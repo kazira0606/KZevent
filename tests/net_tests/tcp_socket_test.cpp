@@ -1,7 +1,9 @@
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <future>
 #include <memory>
+#include <random>
 #include <string>
 #include <thread>
 
@@ -212,6 +214,7 @@ TEST_F(KZTcpTest, EchoTcpClientTestIpv4) {
   server_thread.join();
 }
 
+/*-------------------- TCP client 重启测试 --------------------*/
 TEST_F(KZTcpTest, ClientStopAndRestartTest) {
   const uint16_t server_port = 8888;
   const std::string msg = "Restart test";
@@ -237,8 +240,10 @@ TEST_F(KZTcpTest, ClientStopAndRestartTest) {
 
     for (int32_t i{0}; i < 2; ++i) {
       int32_t cfd = accept(lfd, nullptr, nullptr);
-      if (cfd < 0)
-        break;
+      if (cfd < 0) {
+        ADD_FAILURE() << "failed to accept connection";
+        return;
+      }
 
       char buf[1024];
       ssize_t n = read(cfd, buf, sizeof(buf));
@@ -299,4 +304,234 @@ TEST_F(KZTcpTest, ClientStopAndRestartTest) {
   if (server_thread.joinable()) {
     server_thread.join();
   }
+}
+
+/*-------------------- TCP client 大数据测试 --------------------*/
+TEST_F(KZTcpTest, TcpBigDataTest) {
+  /* 准备 100MB 的随机测试数据 */
+  const size_t kBigDataSize = 100 * 1024 * 1024;
+  std::vector<uint8_t> big_data_raw(kBigDataSize);
+
+  /* 随机数填充大数据 */
+  std::mt19937 rng(std::random_device{}());
+  std::generate(big_data_raw.begin(), big_data_raw.end(),
+                [&]() { return static_cast<uint8_t>(rng()); });
+
+  const uint16_t server_port = 9999;
+  const auto server_ready = std::make_shared<std::promise<void>>();
+  const auto server_ready_future = server_ready->get_future();
+
+  const auto transfer_done = std::make_shared<std::promise<void>>();
+  const auto transfer_done_future = transfer_done->get_future();
+
+  /* server接收 100MB 数据并校验 */
+  std::thread server_thread([&]() {
+    int32_t lfd = socket(AF_INET, SOCK_STREAM, 0);
+    int32_t opt{1};
+    setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(server_port);
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    ASSERT_EQ(bind(lfd, (sockaddr *)&addr, sizeof(addr)), 0);
+    ASSERT_EQ(listen(lfd, 1), 0);
+
+    server_ready->set_value();
+
+    int32_t cfd = accept(lfd, nullptr, nullptr);
+    if (cfd < 0) {
+      ADD_FAILURE() << "failed to accept connection";
+      return;
+    }
+
+    /* 获取帧头 */
+    uint32_t expected_len{0};
+    ssize_t head_n = read(cfd, &expected_len, 4);
+    ASSERT_EQ(head_n, 4);
+    ASSERT_EQ(expected_len, kBigDataSize);
+
+    /* 收满 100MB */
+    std::vector<uint8_t> received_data;
+    received_data.reserve(kBigDataSize);
+    std::array<uint8_t, 64 * 1024> chunk{};
+
+    size_t total_read = 0;
+    while (total_read < kBigDataSize) {
+      ssize_t n = read(cfd, chunk.data(), chunk.size());
+      if (n <= 0)
+        break;
+      received_data.insert(received_data.end(), chunk.begin(),
+                           chunk.begin() + n);
+      total_read += n;
+    }
+
+    /* 校验数据 */
+    bool is_equal = std::equal(big_data_raw.begin(), big_data_raw.end(),
+                               received_data.begin());
+    if (is_equal) {
+      transfer_done->set_value();
+    } else {
+      ADD_FAILURE() << "Data corruption detected in big data transfer!";
+    }
+
+    close(cfd);
+    close(lfd);
+  });
+
+  server_ready_future.wait();
+
+  /* 创建TCP客户端 */
+  const auto client_addr = net::InetAddr::make_ipv4("0.0.0.0", 0);
+  ASSERT_TRUE(client_addr.has_value());
+
+  const auto target_addr = net::InetAddr::make_ipv4("127.0.0.1", server_port);
+  ASSERT_TRUE(target_addr.has_value());
+
+  const auto client =
+      net::tcp::TcpClient::make_tcp_client(*loop_, client_addr.value());
+  ASSERT_TRUE(client);
+
+  client->connect(target_addr.value(), 1000);
+
+  /* 发送数据转str（构造帧函数只写了string的版本） */
+  std::string big_data_str(big_data_raw.begin(), big_data_raw.end());
+
+  client->post_send_task(data_to_packet(big_data_str));
+
+  auto status = transfer_done_future.wait_for(std::chrono::seconds(3));
+  EXPECT_EQ(status, std::future_status::ready)
+      << "Big data transfer timed out or failed";
+
+  server_thread.join();
+}
+
+/*-------------------- TCP server + client 并发测试 --------------------*/
+TEST_F(KZTcpTest, TcpServerTest) {
+  struct ServerSessionCtx {
+    std::vector<std::string> received_msgs;
+  };
+
+  const int32_t MSGS_PER_CLIENT{5};
+  const uint16_t port = 7777;
+
+  auto server_addr = net::InetAddr::make_ipv4("127.0.0.1", port);
+  auto server =
+      net::tcp::TcpServer::make_tcp_server(*loop_, server_addr.value());
+  ASSERT_TRUE(server);
+
+  /* 切包 */
+  server->set_split_cb([](const auto &, auto slice) -> ssize_t {
+    if (slice.size() < 4)
+      return 0;
+    uint32_t len{};
+    std::copy(slice.data(), slice.data() + 4,
+              reinterpret_cast<uint8_t *>(&len));
+    return (len + 4 <= slice.size()) ? (len + 4) : 0;
+  });
+
+  /* 业务逻辑 */
+  server->set_fragment_cb([&](const auto &session, auto fragment) {
+    if (!session->get_user_context()) {
+      session->set_user_context(std::make_shared<ServerSessionCtx>());
+    }
+    auto ctx =
+        std::static_pointer_cast<ServerSessionCtx>(session->get_user_context());
+
+    /* 消息存储在每个客户端的contex中 */
+    std::string msg(fragment.begin() + 4, fragment.end());
+    ctx->received_msgs.push_back(std::move(msg));
+
+    /* 收 MSGS_PER_CLIENT 个消息后逆序发回 */
+    if (ctx->received_msgs.size() == MSGS_PER_CLIENT) {
+      for (int32_t i{MSGS_PER_CLIENT - 1}; i >= 0; --i) {
+        session->post_send_task(data_to_packet(ctx->received_msgs[i]));
+      }
+    }
+  });
+
+  std::atomic<int32_t> total_finished_clients{0};
+  const auto all_done_promise = std::make_shared<std::promise<void>>();
+  auto all_done_future = all_done_promise->get_future();
+
+  /* 客户端 */
+  struct ClientInstance {
+    std::shared_ptr<net::tcp::TcpClient> client;
+    std::vector<std::string> sent_msgs;
+    std::vector<std::string> received_msgs;
+  };
+
+  std::vector<std::shared_ptr<ClientInstance>> clients;
+  auto client_bind_addr = net::InetAddr::make_ipv4("0.0.0.0", 0).value();
+
+  /* 创建 KZEVENT_CLIENT_NUM 个客户端并创建业务数据 */
+  for (int32_t client_index{0}; client_index < KZEVENT_CLIENT_NUM;
+       ++client_index) {
+    auto inst = std::make_shared<ClientInstance>();
+
+    for (int32_t str_index{0}; str_index < MSGS_PER_CLIENT; ++str_index) {
+      inst->sent_msgs.push_back("Client" + std::to_string(client_index) +
+                                "_Msg" + std::to_string(str_index) + "_" +
+                                std::to_string(client_index * str_index));
+    }
+
+    inst->client =
+        net::tcp::TcpClient::make_tcp_client(*loop_, client_bind_addr);
+
+    /* 客户端切包 */
+    inst->client->set_split_cb([](const auto &, auto slice) -> ssize_t {
+      if (slice.size() < 4)
+        return 0;
+      uint32_t len{};
+      std::copy(slice.data(), slice.data() + 4,
+                reinterpret_cast<uint8_t *>(&len));
+      return (len + 4 <= slice.size()) ? (len + 4) : 0;
+    });
+
+    std::weak_ptr<ClientInstance> weak_inst = inst;
+
+    /* 客户端业务逻辑 */
+    inst->client->set_fragment_cb([weak_inst, &total_finished_clients,
+                                   all_done_promise, MSGS_PER_CLIENT](
+                                      const auto &, auto fragment) {
+      auto locked_inst = weak_inst.lock();
+      if (!locked_inst)
+        return;
+
+      std::string msg(fragment.begin() + 4, fragment.end());
+      locked_inst->received_msgs.push_back(std::move(msg));
+
+      /* 校验反向发回的数据 */
+      if (locked_inst->received_msgs.size() == MSGS_PER_CLIENT) {
+        for (int32_t recv_index{0}; recv_index < MSGS_PER_CLIENT;
+             ++recv_index) {
+          EXPECT_EQ(locked_inst->received_msgs[recv_index],
+                    locked_inst->sent_msgs[MSGS_PER_CLIENT - 1 - recv_index]);
+        }
+        if (++total_finished_clients == KZEVENT_CLIENT_NUM) {
+          all_done_promise->set_value();
+        }
+      }
+    });
+
+    clients.push_back(std::move(inst));
+  }
+
+  /* 启动客户端 */
+  auto target_addr = net::InetAddr::make_ipv4("127.0.0.1", port).value();
+  for (auto &inst : clients) {
+    inst->client->connect(target_addr, 1000);
+    for (const auto &s : inst->sent_msgs) {
+      inst->client->post_send_task(data_to_packet(s));
+    }
+  }
+
+  /* 等待所有客户端完成 */
+  auto status = all_done_future.wait_for(std::chrono::seconds(10));
+  EXPECT_EQ(status, std::future_status::ready)
+      << "Timeout! Finished: " << total_finished_clients.load();
+
+  /* 确认所有客户端完成 */
+  EXPECT_EQ(total_finished_clients.load(), KZEVENT_CLIENT_NUM);
 }

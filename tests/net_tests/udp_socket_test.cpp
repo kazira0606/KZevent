@@ -217,7 +217,7 @@ TEST_F(KZUdpTest, UdpNodeStopThenStartTest) {
 }
 
 /*-------------------- UdpServer和UdpClient ipv6测试 --------------------*/
-TEST_F(KZUdpTest, EchoUdpServerTestIpv6_ContextFeature) {
+TEST_F(KZUdpTest, EchoUdpServerTestIpv6) {
   using namespace kzevent::net::udp;
   constexpr uint16_t server_port{7777};
 

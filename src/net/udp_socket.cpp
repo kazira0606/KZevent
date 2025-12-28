@@ -14,8 +14,6 @@
 
 namespace kzevent::net::udp {
 /*-------------------- UDP node  --------------------*/
-UdpNode::~UdpNode() { stop(); }
-
 std::shared_ptr<UdpNode> UdpNode::make_udp_node(core::Loop &loop,
                                                 const InetAddr &local) {
   if (local.get_sockaddr()->sa_family != AF_INET &&
@@ -57,13 +55,11 @@ void UdpNode::on_read(std::vector<uint8_t> data, const InetAddr &source) {
   post_heavy_task(std::move(task));
 }
 
-void UdpNode::on_error(int32_t err) {
+void UdpNode::on_error(const int32_t err) {
   KZ_LOG_ERROR("udp node err: ", std::system_category().message(err));
 }
 
 /*-------------------- UDP client  --------------------*/
-UdpClient::~UdpClient() { stop(); }
-
 std::shared_ptr<UdpClient> UdpClient::make_udp_client(core::Loop &loop,
                                                       const InetAddr &local,
                                                       const InetAddr &source) {
@@ -122,7 +118,7 @@ void UdpClient::on_read(std::vector<uint8_t> data, const InetAddr &source) {
   post_heavy_task(std::move(task));
 }
 
-void UdpClient::on_error(int32_t err) {
+void UdpClient::on_error(const int32_t err) {
   KZ_LOG_ERROR("udp client err: ", std::system_category().message(err));
 
   if (error_cb_ == nullptr) {
@@ -150,7 +146,7 @@ std::shared_ptr<UdpServer::UdpSession> UdpServer::UdpSession::make_udp_session(
   struct EnableMakeShared : public UdpServer::UdpSession {
     EnableMakeShared(const std::shared_ptr<UdpServer> &server,
                      const InetAddr &source,
-                     std::chrono::steady_clock::time_point time_stamp)
+                     const std::chrono::steady_clock::time_point time_stamp)
         : UdpServer::UdpSession(server, source, time_stamp) {}
   };
   return std::make_shared<EnableMakeShared>(server, source, time_stamp);
@@ -168,11 +164,10 @@ UdpServer::UdpSession::get_user_context() const noexcept {
 
 UdpServer::UdpSession::UdpSession(
     const std::shared_ptr<UdpServer> &server, const InetAddr &source,
-    std::chrono::steady_clock::time_point time_stamp)
+    const std::chrono::steady_clock::time_point time_stamp)
     : source_(source), time_stamp_(time_stamp), server_(server) {}
 
 /*-------------------- UDP server  --------------------*/
-UdpServer::~UdpServer() { stop(); }
 std::shared_ptr<UdpServer>
 UdpServer::make_udp_server(core::Loop &loop, const InetAddr &local,
                            uint64_t session_timeout_ms) {
@@ -184,7 +179,7 @@ UdpServer::make_udp_server(core::Loop &loop, const InetAddr &local,
 
   struct EnableMakeShared : public UdpServer {
     EnableMakeShared(core::Loop &loop, const InetAddr &local,
-                     uint64_t session_timeout_ms)
+                     const uint64_t session_timeout_ms)
         : UdpServer(loop, local, session_timeout_ms) {}
   };
   auto ret =
@@ -197,8 +192,7 @@ void UdpServer::start() {
   /* 基类启动 */
   DgramSocket::start();
 
-  bool expected{false};
-  if (!started_.compare_exchange_strong(expected, true)) {
+  if (bool expected{false}; !started_.compare_exchange_strong(expected, true)) {
     /* 已经启动 */
     return;
   }
@@ -216,9 +210,8 @@ void UdpServer::start() {
     auto it = sessions_.begin();
     while (it != sessions_.end()) {
       /* 扫描所有会话距离上一次接收数据的时间间隔 */
-      const auto duration = now - it->second->time_stamp_;
-
-      if (duration > std::chrono::milliseconds{session_timeout_ms_}) {
+      if (const auto duration = now - it->second->time_stamp_;
+          duration > std::chrono::milliseconds{session_timeout_ms_}) {
         /* 会话超时 */
         it = sessions_.erase(it);
       } else {
@@ -232,9 +225,10 @@ void UdpServer::start() {
 }
 
 void UdpServer::stop() {
-  started_ = false;
   /* 基类停止 */
   DgramSocket::stop();
+
+  started_ = false;
   timer_channel_.disable_event();
 }
 
@@ -323,7 +317,7 @@ void UdpServer::on_read(std::vector<uint8_t> data, const InetAddr &source) {
   post_heavy_task(std::move(task));
 }
 
-void UdpServer::on_error(int32_t err) {
+void UdpServer::on_error(const int32_t err) {
   KZ_LOG_ERROR("udp server err: ", std::system_category().message(err));
 }
 } // namespace kzevent::net::udp
