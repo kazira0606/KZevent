@@ -2,9 +2,9 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string_view>
 
 #include <arpa/inet.h>
-#include <string_view>
 #include <sys/types.h>
 
 #include "kzevent/core.hpp"
@@ -56,12 +56,11 @@ ssize_t TcpClient::on_split() {
     return 0;
   }
 
-  const std::string_view stream_slice{
-      reinterpret_cast<char *>(recv_buf_.begin()),
-      static_cast<size_t>(recv_buf_.size())};
+  const std::string_view slice{reinterpret_cast<char *>(recv_buf_.begin()),
+                               static_cast<size_t>(recv_buf_.size())};
 
   return split_cb_(std::static_pointer_cast<TcpClient>(shared_from_this()),
-                   stream_slice);
+                   slice);
 }
 
 void TcpClient::on_fragment(std::vector<uint8_t> fragment) {
@@ -157,11 +156,11 @@ ssize_t TcpServer::on_split(const Session session) {
     return 0;
   }
 
-  const std::string_view stream_slice{
+  const std::string_view slice{
       reinterpret_cast<char *>(session->recv_buf_.begin()),
       static_cast<size_t>(session->recv_buf_.size())};
 
-  return split_cb_(session, stream_slice);
+  return split_cb_(session, slice);
 }
 
 void TcpServer::on_fragment(std::vector<uint8_t> fragment, Session session) {

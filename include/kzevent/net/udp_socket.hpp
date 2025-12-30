@@ -137,9 +137,9 @@ public:
   };
 
   /* server新建session和接收回调 */
+  using Session = std::shared_ptr<UdpSession>;
   using ServerCallBack =
-      std::function<void(const std::shared_ptr<UdpSession> &udp_session,
-                         std::vector<uint8_t> data)>;
+      std::function<void(const Session &session, std::vector<uint8_t> data)>;
 
   ~UdpServer() override {
     started_ = false;

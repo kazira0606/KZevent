@@ -1,4 +1,4 @@
-add_executable(kz_unit_tests
+set(KZ_UNIT_TESTS_SOURCES
         core_test.cpp
         log_test.cpp
         net_tests/tcp_socket_test.cpp
@@ -6,7 +6,9 @@ add_executable(kz_unit_tests
         timer_tests/timer_test.cpp
 )
 
-target_link_libraries(kz_unit_tests
+add_executable(kz_unit_tests ${KZ_UNIT_TESTS_SOURCES})
+
+target_link_libraries(kz_unit_tests 
         PRIVATE
         kzevent
         GTest::gtest_main

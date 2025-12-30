@@ -500,14 +500,14 @@ make_stream_server_channel(core::Loop &loop, const InetAddr &addr) {
     }
   }
 
-  /* 服务端显式bind */
+  /* bind */
   if (const auto ret = bind(fd, addr.get_sockaddr(), addr.get_socklen());
       ret == -1) {
     sys_error::error();
     return std::nullopt;
   }
 
-  /* 监听 */
+  /* listen */
   if (const auto ret = listen(fd, SOMAXCONN); ret == -1) {
     sys_error::error();
     return std::nullopt;
@@ -537,6 +537,13 @@ make_stream_client_channel(core::Loop &loop, const InetAddr &addr) {
       sys_error::error();
       return std::nullopt;
     }
+  }
+
+  /* bind */
+  if (const auto ret = bind(fd, addr.get_sockaddr(), addr.get_socklen());
+      ret == -1) {
+    sys_error::error();
+    return std::nullopt;
   }
 
   return stream_channel;

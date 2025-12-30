@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <string_view>
+
 #include <sys/types.h>
 
 #include "kzevent/core.hpp"
@@ -13,18 +14,17 @@ namespace kzevent::net::tcp {
 /*-------------------- TCP client  --------------------*/
 class TcpClient : public StreamClientSocket {
   /* TCP流回调，返回本次解析某帧消耗的字节数 */
-  using SplitCallBack =
-      std::function<ssize_t(const std::shared_ptr<TcpClient> &tcp_client,
-                            std::string_view stream_slice)>;
+  using SplitCallBack = std::function<ssize_t(
+      const std::shared_ptr<TcpClient> &session, std::string_view slice)>;
 
   /* TCP帧回调，形参为split解析的帧 */
   using FragmentCallBack =
-      std::function<void(const std::shared_ptr<TcpClient> &tcp_client,
+      std::function<void(const std::shared_ptr<TcpClient> &session,
                          std::vector<uint8_t> fragment)>;
 
   /* TCP失败/异常/正常断连断连回调 */
   using DisconnectCallBack =
-      std::function<void(const std::shared_ptr<TcpClient> &tcp_client)>;
+      std::function<void(const std::shared_ptr<TcpClient> &session)>;
 
 public:
   /* 静态工厂 */
@@ -75,21 +75,21 @@ private:
 
 /*-------------------- TCP server  --------------------*/
 class TcpServer : public StreamServerSocket {
+public:
   /* TCP会话 */
   using Session = std::shared_ptr<StreamSession>;
 
   /* TCP流回调，返回本次解析某帧消耗的字节数 */
-  using SplitCallBack = std::function<ssize_t(const Session &tcp_client,
-                                              std::string_view stream_slice)>;
+  using SplitCallBack =
+      std::function<ssize_t(const Session &session, std::string_view slice)>;
 
   /* TCP帧回调，形参为split解析的帧 */
-  using FragmentCallBack = std::function<void(const Session &tcp_client,
+  using FragmentCallBack = std::function<void(const Session &session,
                                               std::vector<uint8_t> fragment)>;
 
   /* TCP失败/异常/正常断连断连回调 */
-  using DisconnectCallBack = std::function<void(const Session &tcp_client)>;
+  using DisconnectCallBack = std::function<void(const Session &session)>;
 
-public:
   ~TcpServer() override = default;
 
   /* 静态工厂 */

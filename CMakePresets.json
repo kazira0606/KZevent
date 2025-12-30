@@ -13,40 +13,69 @@
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "ENABLE_ASAN": "OFF",
+        "KZEVENT_BUILD_TESTS": "OFF",
+        "KZEVENT_BUILD_EXAMPLES": "OFF",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     },
     {
-      "name": "asan",
-      "displayName": "Debug + ASan (Memory)",
-      "description": "Address Sanitizer & UBSan & Leak Sanitizer",
+      "name": "asan-debug",
+      "displayName": "GTest & Debug & ASan (Memory)",
+      "description": "GTest & Address Sanitizer & UBSan & Leak Sanitizer",
       "inherits": "default-base",
       "cacheVariables": {
         "ENABLE_ASAN": "ON",
+        "KZEVENT_BUILD_TESTS": "ON",
+        "KZEVENT_BUILD_EXAMPLES": "ON",
         "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "test-release",
+      "displayName": "GTest & Release",
+      "description": "GTest & Release",
+      "inherits": "default-base",
+      "cacheVariables": {
+        "KZEVENT_BUILD_TESTS": "ON",
+        "KZEVENT_BUILD_EXAMPLES": "ON",
+        "CMAKE_BUILD_TYPE": "Release"
       }
     },
     {
       "name": "release",
       "displayName": "Release",
-      "description": "Release build",
+      "description": "Release",
       "inherits": "default-base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
     }
   ],
+  "buildPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "test-release",
+      "configurePreset": "test-release"
+    },
+    {
+      "name": "asan-debug",
+      "configurePreset": "asan-debug"
+    }
+  ],
   "testPresets": [
     {
-      "name": "asan",
-      "configurePreset": "asan",
+      "name": "test-release",
+      "configurePreset": "test-release",
       "output": {
         "verbosity": "verbose"
       }
     },
     {
-      "name": "release",
-      "configurePreset": "release",
+      "name": "asan-debug",
+      "configurePreset": "asan-debug",
       "output": {
         "verbosity": "verbose"
       }

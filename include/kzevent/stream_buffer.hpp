@@ -2,9 +2,10 @@
 
 #include <cstdint>
 #include <iterator>
-#include <sys/types.h>
 #include <type_traits>
 #include <vector>
+
+#include <sys/types.h>
 
 namespace kzevent::core {
 class StreamBuffer {

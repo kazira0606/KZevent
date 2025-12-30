@@ -2,10 +2,10 @@
 #include <cstdint>
 #include <memory>
 #include <system_error>
+#include <utility>
 
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <utility>
 
 #include "kzevent/core.hpp"
 #include "kzevent/log.hpp"
