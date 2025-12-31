@@ -32,7 +32,7 @@ int main() {
                              const std::vector<uint8_t>&) {
     /* 直接回复http报文 */
     static const std::string http_resp = "HTTP/1.1 200 OK\r\n"
-                                         "Content-Length: 13\r\n"
+                                         "Content-Length: 6\r\n"
                                          "Connection: keep-alive\r\n"
                                          "\r\n"
                                          "Hello!";
