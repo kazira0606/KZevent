@@ -11,6 +11,7 @@
 constexpr uint32_t FRAM_HEAD = 4;
 std::vector<uint8_t> data_to_packet(const std::vector<uint8_t> &data) {
   std::vector<uint8_t> packet;
+  packet.reserve(FRAM_HEAD + data.size());
   uint32_t len = data.size();
   std::copy(reinterpret_cast<uint8_t *>(&len),
             reinterpret_cast<uint8_t *>(&len) + sizeof(len),
