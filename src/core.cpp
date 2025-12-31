@@ -6,7 +6,6 @@
 #include <functional>
 #include <mutex>
 #include <thread>
-#include <unordered_map>
 #include <utility>
 
 #include <sys/epoll.h>
@@ -78,7 +77,7 @@ constexpr EventType local_to_kz(const uint32_t local_events) {
 } // namespace
 
 /*-------------------- 循环监听+执行事件 --------------------*/
-Loop::Loop() {
+Loop::Loop() : events_(kEpollInitEventLen) {
   if (epoll_fd_ = epoll_create1(EPOLL_CLOEXEC); epoll_fd_ < 0) {
     sys_error::fatal();
   }
@@ -126,7 +125,11 @@ Loop::~Loop() {
     sys_error::error();
   }
 
-  for (const auto &[fd, event] : events_) {
+  /* 关闭所有文件描述符 */
+  for (int32_t fd{0}; static_cast<size_t>(fd) < events_.size(); ++fd) {
+    if (events_[fd].in_register == false) {
+      continue;
+    }
     if (const auto ret = close(fd); ret < 0) {
       sys_error::error();
     }
@@ -201,9 +204,11 @@ void Loop::stop() {
 
 void Loop::register_fd(int32_t fd) {
   auto task = [this, fd] {
-    if (const auto [it, success] = events_.try_emplace(fd, Event{}); !success) {
-      KZ_LOG_INFO("fd is registered repeatedly!");
+    if (static_cast<size_t>(fd) >= events_.size()) {
+      events_.resize(std::max(events_.size() * 2, static_cast<size_t>(fd + 1)));
     }
+
+    events_[fd].in_register = true;
   };
 
   post_io_task(std::move(task));
@@ -211,20 +216,25 @@ void Loop::register_fd(int32_t fd) {
 
 void Loop::unregister_fd(int32_t fd) {
   auto task = [this, fd] {
-    if (const auto it = events_.find(fd); it == events_.end()) {
+    if (auto &event = events_[fd]; event.in_register == false) {
       KZ_LOG_INFO("fd is unregistered repeatedly!");
     } else {
-      if (it->second.in_epoll == true) {
+      if (event.in_epoll == true) {
+        /* 删除epoll监听 */
         if (const auto ret = epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
             ret < 0 && errno != ENOENT) {
           sys_error::error();
         }
       }
+
       /* 取消注册 */
-      events_.erase(it);
       if (const auto ret = close(fd); ret < 0) {
         sys_error::error();
+        return;
       }
+      event.in_register = false;
+      event.in_epoll = false;
+      event.cb_ = nullptr;
     }
   };
 
@@ -234,11 +244,11 @@ void Loop::unregister_fd(int32_t fd) {
 void Loop::enable_fd(const int32_t fd, const EventType types,
                      const EventMode modes, CallBack cb) {
   auto task = [this, fd, types, modes, cb = std::move(cb)]() mutable {
-    if (const auto it = events_.find(fd); it == events_.end()) {
+    if (auto &event = events_[fd]; event.in_register == false) {
       KZ_LOG_INFO("fd has not registered!");
     } else {
       int32_t epoll_op{};
-      it->second.in_epoll ? epoll_op = EPOLL_CTL_MOD : epoll_op = EPOLL_CTL_ADD;
+      event.in_epoll ? epoll_op = EPOLL_CTL_MOD : epoll_op = EPOLL_CTL_ADD;
 
       epoll_event ev{};
       ev.events = kz_to_local(types) | kz_to_local(modes);
@@ -261,8 +271,8 @@ void Loop::enable_fd(const int32_t fd, const EventType types,
         }
       }
 
-      it->second.in_epoll = true;
-      it->second.cb_ = std::move(cb);
+      event.in_epoll = true;
+      event.cb_ = std::move(cb);
     }
   };
 
@@ -272,11 +282,11 @@ void Loop::enable_fd(const int32_t fd, const EventType types,
 void Loop::enable_fd(const int32_t fd, const EventType types,
                      const EventMode modes) {
   auto task = [this, fd, types, modes] {
-    if (const auto it = events_.find(fd); it == events_.end()) {
+    if (auto &event = events_[fd]; event.in_register == false) {
       KZ_LOG_INFO("fd has not registered!");
     } else {
       int32_t epoll_op{};
-      it->second.in_epoll ? epoll_op = EPOLL_CTL_MOD : epoll_op = EPOLL_CTL_ADD;
+      event.in_epoll ? epoll_op = EPOLL_CTL_MOD : epoll_op = EPOLL_CTL_ADD;
 
       epoll_event ev{};
       ev.events = kz_to_local(types) | kz_to_local(modes);
@@ -299,7 +309,7 @@ void Loop::enable_fd(const int32_t fd, const EventType types,
         }
       }
 
-      it->second.in_epoll = true;
+      event.in_epoll = true;
     }
   };
 
@@ -308,7 +318,7 @@ void Loop::enable_fd(const int32_t fd, const EventType types,
 
 void Loop::disable_fd(int32_t fd) {
   auto task = [this, fd] {
-    if (const auto it = events_.find(fd); it == events_.end()) {
+    if (auto &event = events_[fd]; event.in_register == false) {
       KZ_LOG_INFO("fd has not registered!");
     } else {
       if (const auto ret = epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
@@ -317,8 +327,8 @@ void Loop::disable_fd(int32_t fd) {
         return;
       }
 
-      it->second.in_epoll = false;
-      it->second.cb_ = [](EventType) {};
+      event.in_epoll = false;
+      event.cb_ = nullptr;
     }
   };
 
@@ -389,9 +399,8 @@ void Loop::io_executor() {
       }
 
       /* 执行回调 */
-      if (const auto event_it = events_.find(it->data.fd);
-          event_it != events_.end()) {
-        event_it->second.cb_(local_to_kz(it->events));
+      if (const auto &cb = events_[it->data.fd].cb_; cb != nullptr) {
+        cb(local_to_kz(it->events));
       }
     }
   }

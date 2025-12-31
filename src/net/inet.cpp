@@ -570,7 +570,7 @@ std::optional<core::LoopChannel> make_timer_channel(core::Loop &loop,
   const auto sec = timeout_ms / 1000;
   const auto nsec = (timeout_ms % 1000) * 1000000;
 
-  struct itimerspec ts{};
+  struct itimerspec ts {};
   /* 首次延迟 */
   ts.it_value.tv_sec = static_cast<time_t>(sec);
   ts.it_value.tv_nsec = static_cast<long>(nsec);
@@ -866,9 +866,14 @@ void StreamServerSocket::StreamSession::start() {
       socklen_t len = sizeof(err);
       getsockopt(session_channel_.get_fd(), SOL_SOCKET, SO_ERROR, &err, &len);
 
-      if (err != 0) {
-        send_buf_.clear();
-        server->on_session_error(err, shared_from_this());
+      if (err != 0 && err != ECONNRESET && err != EPIPE) {
+        if (err == ECONNRESET || err == EPIPE) {
+          disconnected = true;
+        } else {
+          recv_buf_.clear();
+          send_buf_.clear();
+          server->on_session_error(err, shared_from_this());
+        }
       }
     }
 
@@ -1202,9 +1207,14 @@ void StreamClientSocket::start() {
       socklen_t len = sizeof(err);
       getsockopt(stream_channel_.get_fd(), SOL_SOCKET, SO_ERROR, &err, &len);
 
-      if (err != 0) {
-        send_buf_.clear();
-        on_error(err);
+      if (err != 0 && err != ECONNRESET && err != EPIPE) {
+        if (err == ECONNRESET || err == EPIPE) {
+          disconnected = true;
+        } else {
+          recv_buf_.clear();
+          send_buf_.clear();
+          on_error(err);
+        }
       }
     }
 

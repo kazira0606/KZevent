@@ -1,4 +1,5 @@
 set(KZEVENT_EXAMPLES
+    pressure_example
     tcp_example
     timer_example
     udp_example

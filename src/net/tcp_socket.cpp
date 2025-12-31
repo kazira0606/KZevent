@@ -91,8 +91,7 @@ void TcpClient::on_error(const int32_t err) {
   case ETIMEDOUT:
   case ENETUNREACH:
   case EHOSTUNREACH:
-  case EADDRNOTAVAIL:
-  case ECONNRESET: {
+  case EADDRNOTAVAIL: {
     error_cb_(std::static_pointer_cast<TcpClient>(shared_from_this()));
     break;
   }
@@ -190,8 +189,7 @@ void TcpServer::on_session_error(const int32_t err, const Session session) {
   case ETIMEDOUT:
   case ENETUNREACH:
   case EHOSTUNREACH:
-  case EADDRNOTAVAIL:
-  case ECONNRESET: {
+  case EADDRNOTAVAIL: {
     session_error_cb_(session);
     break;
   }

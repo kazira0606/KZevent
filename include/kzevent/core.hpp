@@ -2,11 +2,11 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -15,6 +15,7 @@
 namespace kzevent::core {
 /* epoll配置 */
 static constexpr uint32_t kEpollMaxWaitLen = 256;
+static constexpr uint32_t kEpollInitEventLen = 512;
 
 /* 事件类型 */
 enum class EventType : uint32_t {
@@ -89,8 +90,9 @@ public:
 private:
   /* 事件 */
   struct Event {
+    bool in_register{false};
     bool in_epoll{false};
-    CallBack cb_{[](const EventType) {}};
+    CallBack cb_{nullptr};
   };
 
   /* loop fd 接口 */
@@ -139,7 +141,7 @@ private:
   std::condition_variable heavy_wake_cv_{};
 
   /* 持有的Events */
-  std::unordered_map<int32_t, Event> events_{};
+  std::vector<Event> events_{};
 };
 
 /*-------------------- Loop接口 --------------------*/
@@ -202,7 +204,6 @@ void LoopChannel::update_event(LifeChecker life_checker, const EventType types,
                      cb = std::move(cb)](const EventType event_types) mutable {
     const auto keep_life{life_checker.lock()};
     if (!keep_life) {
-      KZ_LOG_ERROR("executor can`t run callback! fd has closed!");
       return;
     }
     cb(event_types);
