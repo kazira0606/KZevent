@@ -33,6 +33,10 @@ public:
 
   using DgramSocket::post_heavy_task;
 
+  using DgramSocket::joint_group;
+
+  using DgramSocket::leave_group;
+
   using DgramSocket::start;
 
   using DgramSocket::stop;
@@ -70,6 +74,10 @@ public:
   template <typename container> void post_send_task(container data);
 
   using DgramSocket::post_heavy_task;
+
+  using DgramSocket::joint_group;
+
+  using DgramSocket::leave_group;
 
   using DgramSocket::start;
 

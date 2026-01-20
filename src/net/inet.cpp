@@ -449,6 +449,17 @@ std::optional<core::LoopChannel> make_dgram_channel(core::Loop &loop,
     }
   }
 
+  /* ipv4开启广播 */
+  if (addr.get_sockaddr()->sa_family == AF_INET) {
+    constexpr int32_t on{1};
+    if (const auto ret =
+            setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
+        ret == -1) {
+      sys_error::error();
+      return std::nullopt;
+    }
+  }
+
   if (const auto ret = bind(fd, addr.get_sockaddr(), addr.get_socklen());
       ret == -1) {
     sys_error::error();
@@ -701,6 +712,83 @@ DgramSocket::DgramSocket(core::Loop &loop, const InetAddr &local)
 
         return std::move(ch).value();
       }()) {}
+
+void DgramSocket::joint_group(const InetAddr &addr) {
+  const auto fd = dgram_channel_.get_fd();
+  const auto sa = addr.get_sockaddr();
+
+  switch (sa->sa_family) {
+  case AF_INET: {
+    ip_mreq group_addr{};
+    const auto sa_in = reinterpret_cast<const sockaddr_in *>(sa);
+    group_addr.imr_multiaddr = sa_in->sin_addr;
+    group_addr.imr_interface.s_addr = htonl(INADDR_ANY);
+
+    if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &group_addr,
+                   sizeof(group_addr)) == -1) {
+      sys_error::error();
+    }
+
+    return;
+  }
+
+  case AF_INET6: {
+    ipv6_mreq group_addr{};
+    const auto sa_in6 = reinterpret_cast<const sockaddr_in6 *>(sa);
+    group_addr.ipv6mr_multiaddr = sa_in6->sin6_addr;
+    group_addr.ipv6mr_interface = 0;
+
+    if (setsockopt(fd, IPPROTO_IPV6, IPV6_JOIN_GROUP, &group_addr,
+                   sizeof(group_addr)) == -1) {
+      sys_error::error();
+    }
+
+    return;
+  }
+
+  default:
+    KZ_LOG_ERROR("invalid multicast address!");
+  }
+}
+
+void DgramSocket::leave_group(const InetAddr &addr) {
+  const auto fd = dgram_channel_.get_fd();
+  const auto sa = addr.get_sockaddr();
+
+  switch (sa->sa_family) {
+  case AF_INET: {
+    struct ip_mreq group_addr {};
+    const auto sa_in = reinterpret_cast<const sockaddr_in *>(sa);
+
+    group_addr.imr_multiaddr = sa_in->sin_addr;
+    group_addr.imr_interface.s_addr = htonl(INADDR_ANY);
+
+    if (setsockopt(fd, IPPROTO_IP, IP_DROP_MEMBERSHIP, &group_addr,
+                   sizeof(group_addr)) == -1) {
+      sys_error::error();
+    }
+    break;
+  }
+    
+  case AF_INET6: {
+    struct ipv6_mreq group_addr {};
+    const auto sa_in6 = reinterpret_cast<const sockaddr_in6 *>(sa);
+
+    group_addr.ipv6mr_multiaddr = sa_in6->sin6_addr;
+    group_addr.ipv6mr_interface = 0;
+
+    if (setsockopt(fd, IPPROTO_IPV6, IPV6_LEAVE_GROUP, &group_addr,
+                   sizeof(group_addr)) == -1) {
+      sys_error::error();
+    }
+    break;
+  }
+    
+  default:
+    KZ_LOG_ERROR("invalid multicast address!");
+    break;
+  }
+}
 
 void DgramSocket::start() {
   if (bool expected{false}; !started_.compare_exchange_strong(expected, true)) {

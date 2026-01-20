@@ -3,6 +3,7 @@ set(KZEVENT_EXAMPLES
     tcp_example
     timer_example
     udp_example
+    udp_multicast_example
     unix_example
 )
 

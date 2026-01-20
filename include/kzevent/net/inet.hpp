@@ -143,6 +143,10 @@ protected:
 
   template <typename Fun> void post_heavy_task(Fun task);
 
+  void joint_group(const InetAddr &addr);
+
+  void leave_group(const InetAddr &addr);
+
   virtual void start();
 
   virtual void stop();
