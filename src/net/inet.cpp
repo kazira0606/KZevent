@@ -954,7 +954,7 @@ void StreamServerSocket::StreamSession::start() {
       socklen_t len = sizeof(err);
       getsockopt(session_channel_.get_fd(), SOL_SOCKET, SO_ERROR, &err, &len);
 
-      if (err != 0 && err != ECONNRESET && err != EPIPE) {
+      if (err != 0) {
         if (err == ECONNRESET || err == EPIPE) {
           disconnected = true;
         } else {

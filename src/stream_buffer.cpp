@@ -62,15 +62,16 @@ void StreamBuffer::shrink() {
     return;
   }
 
-  if (shrink_count_ < ShrinkThreshold) {
+  if (shrink_count_ < kShrinkThreshold) {
     /* 未达到缩容次数 */
     ++shrink_count_;
     return;
   }
 
   shrink_count_ = 0;
-  const size_t new_size =
-      buffer_.size() / 2 < initial_size_ ? initial_size_ : buffer_.size() / 2;
+  const size_t new_size = (buffer_.size() / kShrinkDivisor) < initial_size_
+                              ? initial_size_
+                              : buffer_.size() / kShrinkDivisor;
   buffer_.resize(new_size);
   buffer_.shrink_to_fit();
 }

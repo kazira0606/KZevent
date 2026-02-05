@@ -129,6 +129,9 @@ IoStatus stream_recv(const core::LoopChannel &channel, core::StreamBuffer &buf);
 /* dgram socket基类  */
 class DgramSocket : public std::enable_shared_from_this<DgramSocket> {
 public:
+  /* 常量定义 */
+  static constexpr size_t kMaxUdpPacketSize = 65535;
+
   DgramSocket(core::Loop &loop, const InetAddr &local);
 
   virtual ~DgramSocket() {
@@ -160,7 +163,7 @@ private:
   core::LoopChannel dgram_channel_;
 
   /* 接收缓冲区 */
-  std::array<uint8_t, UINT16_MAX> recv_buf_{};
+  std::array<uint8_t, kMaxUdpPacketSize> recv_buf_{};
 
   /* 启动标志 */
   std::atomic<bool> started_{false};
@@ -170,6 +173,9 @@ private:
 class StreamServerSocket
     : public std::enable_shared_from_this<StreamServerSocket> {
 public:
+  /* 常量定义 */
+  static constexpr size_t kDefaultBufferSize = 65535;
+
   /* stream session */
   class StreamSession : public std::enable_shared_from_this<StreamSession> {
   public:
@@ -192,10 +198,10 @@ public:
     void stop();
 
     /* 接收缓冲区 */
-    core::StreamBuffer recv_buf_{UINT16_MAX};
+    core::StreamBuffer recv_buf_{kDefaultBufferSize};
 
     /* 发送缓冲区 */
-    core::StreamBuffer send_buf_{UINT16_MAX};
+    core::StreamBuffer send_buf_{kDefaultBufferSize};
 
     /* 会话上下文 */
     std::shared_ptr<void> user_context_{};
@@ -244,6 +250,9 @@ private:
 class StreamClientSocket
     : public std::enable_shared_from_this<StreamClientSocket> {
 public:
+  /* 常量定义 */
+  static constexpr size_t kDefaultBufferSize = 65535;
+
   StreamClientSocket(core::Loop &loop, const InetAddr &local);
 
   virtual ~StreamClientSocket() {
@@ -265,10 +274,10 @@ protected:
   virtual void stop();
 
   /* 接收缓冲区 */
-  core::StreamBuffer recv_buf_{UINT16_MAX};
+  core::StreamBuffer recv_buf_{kDefaultBufferSize};
 
   /* 发送缓冲区 */
-  core::StreamBuffer send_buf_{UINT16_MAX};
+  core::StreamBuffer send_buf_{kDefaultBufferSize};
 
 private:
   /* 接口 */

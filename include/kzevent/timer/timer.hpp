@@ -18,8 +18,8 @@ using CallBackOwner = core::LifeChecker;
 
 /* 定时器 */
 struct TimerUnit {
-  TimerCallBack cb_{};
-  CallBackOwner owner_{};
+  mutable TimerCallBack cb_{};
+  mutable CallBackOwner owner_{};
   std::chrono::steady_clock::time_point time_stamp_{};
   std::chrono::steady_clock::duration repeat_interval_{};
   uint64_t timer_id_{};

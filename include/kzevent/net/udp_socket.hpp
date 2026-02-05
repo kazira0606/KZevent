@@ -169,6 +169,12 @@ public:
   void set_read_cb(ServerCallBack cb) noexcept;
 
 private:
+  /* 常量定义 */
+  static constexpr uint64_t kDefaultSessionTimeoutMs = 60000;
+  static constexpr uint64_t kMinScanIntervalMs = 100;
+  static constexpr uint64_t kMaxScanIntervalMs = 10000;
+  static constexpr uint64_t kScanFrequencyDivisor = 10;
+  
   /* 构造函数 */
   UdpServer(core::Loop &loop, const InetAddr &local,
             uint64_t session_timeout_ms);
@@ -192,7 +198,7 @@ private:
 
   /* 默认超时时长1min */
   core::LoopChannel timer_channel_;
-  uint64_t session_timeout_ms_{60000};
+  uint64_t session_timeout_ms_{kDefaultSessionTimeoutMs};
 
   /* 启动标志 */
   std::atomic<bool> started_{false};

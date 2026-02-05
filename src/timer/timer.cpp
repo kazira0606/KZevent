@@ -51,7 +51,11 @@ std::shared_ptr<Timer> Timer::make_timer(core::Loop &loop) {
 
 uint64_t Timer::post_once_task(TimerCallBack cb, CallBackOwner owner,
                                uint64_t timeout_ms) {
-  const auto id = ++timer_id_start_;
+  /* 溢出保护：跳过 0（保留值）*/
+  auto id = ++timer_id_start_;
+  if (id == 0) {
+    id = ++timer_id_start_;
+  }
 
   auto task = [this, cb = std::move(cb), owner = std::move(owner), timeout_ms,
                id]() mutable {
@@ -75,7 +79,11 @@ uint64_t Timer::post_once_task(TimerCallBack cb, CallBackOwner owner,
 
 uint64_t Timer::post_repeat_task(TimerCallBack cb, CallBackOwner owner,
                                  uint64_t timeout_ms) {
-  const auto id = ++timer_id_start_;
+  /* 溢出保护：跳过 0（保留值）*/
+  auto id = ++timer_id_start_;
+  if (id == 0) {
+    id = ++timer_id_start_;
+  }
 
   auto task = [this, cb = std::move(cb), owner = std::move(owner), timeout_ms,
                id]() mutable {
@@ -185,9 +193,8 @@ void Timer::start() {
 
       /* 提取执行事件 */
       TimerUnit current_timer{
-          std::move(const_cast<TimerCallBack &>(timer.cb_)),
-          std::move(const_cast<CallBackOwner &>(timer.owner_)),
-          timer.time_stamp_, timer.repeat_interval_, timer.timer_id_};
+          std::move(timer.cb_), std::move(timer.owner_), timer.time_stamp_,
+          timer.repeat_interval_, timer.timer_id_};
 
       /* 从堆中移除事件 */
       timer_queue_.pop();

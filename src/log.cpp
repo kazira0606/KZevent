@@ -78,8 +78,7 @@ private:
     localtime_r(&in_time_t, &tm_buf);
 
     std::stringstream file_name{};
-    /* 拼接完整路径例: /home/user/project/kz_logs/kz_log_xxxx-xx-xx_xx-xx-xx.txt
-     */
+    /* 完整路径例: /home/user/project/kz_logs/kz_log_xxxx-xx-xx_xx-xx-xx.txt */
     file_name << "kz_log_" << std::put_time(&tm_buf, "%Y-%m-%d_%H-%M-%S")
               << ".txt";
 
@@ -105,7 +104,7 @@ private:
     case Level::kFatal:
       return "FATAL";
     default:
-      assert(false && "invalid log level");
+      assert(false);
       return "UNKNOWN";
     }
   }

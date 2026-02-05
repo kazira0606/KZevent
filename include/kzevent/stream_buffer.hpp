@@ -63,7 +63,8 @@ private:
   /* 缩容计数器 */
   uint8_t shrink_count_{0};
   size_t initial_size_{0};
-  constexpr static uint8_t ShrinkThreshold = 10;
+  static constexpr uint8_t kShrinkThreshold = 10;
+  static constexpr size_t kShrinkDivisor = 2;
 };
 
 /*-------------------- 模板实现 --------------------*/

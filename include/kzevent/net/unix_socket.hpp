@@ -32,12 +32,7 @@ public:
   static std::shared_ptr<UnixClient> make_unix_client(core::Loop &loop,
                                                      const InetAddr &local);
 
-  ~UnixClient() override {
-    if (path_[0] != '@') {
-      /* unix路径型 */
-      unlink(path_.c_str());
-    }
-  };
+  ~UnixClient() override { cleanup_path(); };
 
   /* 方法 */
   using StreamClientSocket::post_send_task;
@@ -80,6 +75,14 @@ private:
 
   /* 路径 */
   std::string path_{};
+
+  /* 清理路径 */
+  void cleanup_path() {
+    if (!path_.empty() && path_[0] != '@') {
+      /* unix路径型 */
+      unlink(path_.c_str());
+    }
+  }
 };
 
 /*-------------------- UNIX server  --------------------*/
@@ -99,12 +102,7 @@ public:
   /* UNIX失败/异常/正常断连断连回调 */
   using DisconnectCallBack = std::function<void(const Session &session)>;
 
-  ~UnixServer() override {
-    if (path_[0] != '@') {
-      /* unix路径型 */
-      unlink(path_.c_str());
-    }
-  };
+  ~UnixServer() override { cleanup_path(); };
 
   /* 静态工厂 */
   static std::shared_ptr<UnixServer> make_unix_server(core::Loop &loop,
@@ -144,5 +142,13 @@ private:
 
   /* 路径 */
   std::string path_{};
+
+  /* 清理路径 */
+  void cleanup_path() {
+    if (!path_.empty() && path_[0] != '@') {
+      /* unix路径型 */
+      unlink(path_.c_str());
+    }
+  }
 };
 } // namespace kzevent::net::unix

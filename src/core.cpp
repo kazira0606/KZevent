@@ -43,7 +43,7 @@ constexpr uint32_t kz_to_local(const EventType events) {
     }
   }
 
-  assert((local_events != 0) && "epoll must have at least one event type");
+  assert(local_events != 0);
 
   return local_events;
 }
@@ -58,8 +58,7 @@ constexpr uint32_t kz_to_local(const EventMode modes) {
     }
   }
 
-  assert(((local_modes & EPOLLET) == EPOLLET) &&
-         "epoll default must use lt mode");
+  assert((local_modes & EPOLLET) == EPOLLET);
 
   return local_modes;
 }
@@ -205,7 +204,12 @@ void Loop::stop() {
 void Loop::register_fd(int32_t fd) {
   auto task = [this, fd] {
     if (static_cast<size_t>(fd) >= events_.size()) {
-      events_.resize(std::max(events_.size() * 2, static_cast<size_t>(fd + 1)));
+      /* 使用 1.5 倍扩容策略 */
+      size_t new_size = events_.size() + events_.size() / 2;
+      if (new_size < static_cast<size_t>(fd) + 1) {
+        new_size = fd + 1;
+      }
+      events_.resize(new_size);
     }
 
     events_[fd].in_register = true;

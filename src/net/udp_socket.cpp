@@ -175,6 +175,13 @@ UdpServer::make_udp_server(core::Loop &loop, const InetAddr &local,
       local.get_sockaddr()->sa_family != AF_INET6) {
     /* udp socket 只支持 ipv4 和 ipv6 */
     KZ_LOG_ERROR("udp server err: unsupported protocol");
+    return {};
+  }
+
+  if (session_timeout_ms == 0) {
+    /* 超时时长不能为 0 */
+    KZ_LOG_ERROR("udp server err: session_timeout_ms cannot be 0");
+    return {};
   }
 
   struct EnableMakeShared : public UdpServer {
@@ -245,14 +252,14 @@ UdpServer::UdpServer(core::Loop &loop, const InetAddr &local,
     : DgramSocket(loop, local), local_(local),
       timer_channel_([&loop, session_timeout_ms]() -> core::LoopChannel {
         /* 默认策略，10倍频率扫描->误差10% */
-        auto scan_time = session_timeout_ms / 10;
+        auto scan_time = session_timeout_ms / kScanFrequencyDivisor;
 
-        if (scan_time < 100) {
+        if (scan_time < kMinScanIntervalMs) {
           /* 最高扫描频率->100ms扫描一次降低cpu负载 */
-          scan_time = 100;
-        } else if (scan_time > 10000) {
+          scan_time = kMinScanIntervalMs;
+        } else if (scan_time > kMaxScanIntervalMs) {
           /* 最低扫描频率->10000ms扫描一次保证内存占用 */
-          scan_time = 10000;
+          scan_time = kMaxScanIntervalMs;
         }
 
         auto ch = make_timer_channel(loop, scan_time, scan_time);
